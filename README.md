@@ -2,7 +2,7 @@
 
 Targets two market types:
 - **Expiring markets** — open markets closing within 60 minutes (pricing often goes stale)
-- **Weather markets** — NWS forecast vs. Kalshi implied probability
+- **Weather markets** — any US city, dynamically resolved via NWS forecast API
 
 ```
 kalshi_bot/
@@ -29,18 +29,17 @@ pip install -r requirements.txt
 3. Copy the Key ID
 
 ### 3. Configure
-Edit `config.py`:
-```python
-KALSHI_API_KEY_ID   = "your-key-id-here"
-KALSHI_API_KEY_FILE = "kalshi_key.pem"   # path to your downloaded .pem
-
-WEATHER_NWS_OFFICE  = "MTR"   # Bay Area; see GRID_POINTS in strategy.py for other cities
-DRY_RUN             = True    # ← keep True until you're confident
+Set environment variables (see `config.py` for all options):
+```bash
+export KALSHI_API_KEY="your-key-id-here"
+export KALSHI_KEY_PATH="kalshi_key.pem"   # path to your downloaded .pem
+export KALSHI_DRY_RUN="true"              # keep true until you're confident
 ```
 
 ### 4. Run
 ```bash
-python bot.py
+python bot.py              # live mode (uses Kalshi API)
+python bot.py --simulate   # simulation mode (synthetic markets, no API needed)
 ```
 
 ---
@@ -54,16 +53,30 @@ Looks for markets where the ask price is meaningfully below the mid (panicked se
 - Scales order size with edge magnitude
 
 ### Weather Strategy
-Pulls NWS point forecasts and compares against Kalshi's implied probability.
-- For temperature markets: uses a normal distribution around the NWS forecast (±3°F)
-- For rain markets: uses NWS PoP (Probability of Precipitation) directly
-- Edge threshold: 8¢ (configurable via `WEATHER_EDGE_THRESHOLD`)
+Trades **any** expiring weather market across all US cities. The bot:
+1. Extracts the city from the ticker code (e.g. `SFO`, `NYC`, `DEN`)
+2. Dynamically resolves the NWS grid point via the `/points/{lat},{lon}` API (cached per city)
+3. Fetches the NWS forecast for that grid point
 
-To add a new city, add an entry to `WeatherStrategy.GRID_POINTS` in `strategy.py`:
-```python
-# Find your grid with: curl https://api.weather.gov/points/{lat},{lon}
-"DEN": ("BOU", 61, 62),   # Denver
-```
+Supported weather market types:
+- **KXHIGH / KXLOW** (temperature): uses a normal distribution around the NWS forecast (±3°F)
+- **KXRAIN** (precipitation): uses NWS PoP (Probability of Precipitation) directly
+- **KXSNOW / KXWIND** (snow, wind): falls back to mean-reversion heuristic
+
+When NWS lookup fails for any reason, the bot falls back to mean-reversion instead of skipping the market.
+
+Edge threshold: 8¢ (configurable via `WEATHER_EDGE_THRESHOLD`)
+
+~20 US cities are pre-configured with coordinates. To add a new city, add its lat/lon to
+`CITY_COORDS` and its ticker code to `TICKER_CITY_MAP` in `strategy.py`.
+
+---
+
+## Simulation mode
+
+Run `python bot.py --simulate` to test the full pipeline without API credentials. This generates
+synthetic markets across multiple cities and weather types, runs them through the scanner,
+strategies, and risk manager, and outputs signals to the dashboard and logs.
 
 ---
 
@@ -93,6 +106,5 @@ custom probability estimates per market category.
 
 ## Notes
 - Kalshi's API rate limits: ~10 req/sec. The scanner batches all markets in one call.
-- The `_traded` set in `bot.py` prevents re-trading the same market within a session.
-  Remove it if you want to add to positions incrementally.
+- Weather market fetches are filtered to markets expiring within 48 hours.
 - All logs go to stdout and `bot.log`.

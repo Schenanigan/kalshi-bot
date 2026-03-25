@@ -31,7 +31,6 @@ EXPIRING_EDGE_THRESHOLD  = 0.06     # 6¢
 LIMIT_PRICE_BUFFER       = 0.01     # 1¢
 
 # Strategy — weather
-WEATHER_NWS_OFFICE       = "MTR"    # Bay Area
 WEATHER_EDGE_THRESHOLD   = 0.08     # 8¢
 
 # Risk

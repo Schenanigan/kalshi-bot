@@ -20,6 +20,60 @@ from scanner import CandidateMarket
 
 log = logging.getLogger(__name__)
 
+# ── City coordinates for dynamic NWS grid resolution ─────────────────────────
+
+CITY_COORDS: dict[str, tuple[float, float]] = {
+    "San Francisco": (37.7749, -122.4194),
+    "New York":      (40.7128, -74.0060),
+    "Chicago":       (41.8781, -87.6298),
+    "Los Angeles":   (34.0522, -118.2437),
+    "Seattle":       (47.6062, -122.3321),
+    "Miami":         (25.7617, -80.1918),
+    "Denver":        (39.7392, -104.9903),
+    "Houston":       (29.7604, -95.3698),
+    "Phoenix":       (33.4484, -112.0740),
+    "Philadelphia":  (39.9526, -75.1652),
+    "Dallas":        (32.7767, -96.7970),
+    "Atlanta":       (33.7490, -84.3880),
+    "Boston":        (42.3601, -71.0589),
+    "Detroit":       (42.3314, -83.0458),
+    "Minneapolis":   (44.9778, -93.2650),
+    "Las Vegas":     (36.1699, -115.1398),
+    "Portland":      (45.5152, -122.6784),
+    "Charlotte":     (35.2271, -80.8431),
+    "Nashville":     (36.1627, -86.7816),
+    "Austin":        (30.2672, -97.7431),
+}
+
+# Map Kalshi ticker city codes to city names
+TICKER_CITY_MAP: dict[str, str] = {
+    "SFO": "San Francisco",
+    "SF":  "San Francisco",
+    "NYC": "New York",
+    "CHI": "Chicago",
+    "LAX": "Los Angeles",
+    "LA":  "Los Angeles",
+    "SEA": "Seattle",
+    "MIA": "Miami",
+    "DEN": "Denver",
+    "HOU": "Houston",
+    "PHX": "Phoenix",
+    "PHL": "Philadelphia",
+    "DFW": "Dallas",
+    "DAL": "Dallas",
+    "ATL": "Atlanta",
+    "BOS": "Boston",
+    "DTW": "Detroit",
+    "DET": "Detroit",
+    "MSP": "Minneapolis",
+    "MIN": "Minneapolis",
+    "LAS": "Las Vegas",
+    "PDX": "Portland",
+    "CLT": "Charlotte",
+    "BNA": "Nashville",
+    "AUS": "Austin",
+}
+
 
 # ── OrderIntent ───────────────────────────────────────────────────────────────
 
@@ -51,23 +105,16 @@ class FairValueStrategy(BaseStrategy):
     against the market price. If the market is mispriced by more than the
     edge threshold, trade into it.
 
-    For weather markets, uses NWS forecast data.
+    For weather markets, uses NWS forecast data (resolved dynamically per city).
     For other markets, fades prices far from 50c (mean-reversion heuristic).
     """
     name = "fair_value"
 
     NWS_BASE = "https://api.weather.gov"
-    GRID_POINTS = {
-        "MTR": ("MTR", 91, 85),    # San Francisco
-        "OKX": ("OKX", 33, 37),    # New York City
-        "LOT": ("LOT", 74, 73),    # Chicago
-        "LOX": ("LOX", 155, 47),   # Los Angeles
-        "SEW": ("SEW", 124, 69),   # Seattle
-        "MFL": ("MFL", 110, 50),   # Miami
-    }
 
     def __init__(self):
         self._forecast_cache: dict[str, dict] = {}
+        self._grid_cache: dict[str, tuple[str, int, int]] = {}  # city -> (office, gridX, gridY)
 
     def evaluate(self, market: CandidateMarket, orderbook: dict) -> Optional[OrderIntent]:
         if "weather" in market.tags:
@@ -106,18 +153,30 @@ class FairValueStrategy(BaseStrategy):
             )
 
     def _evaluate_weather(self, market: CandidateMarket) -> Optional[OrderIntent]:
-        """Compare NWS forecast against Kalshi implied probability."""
+        """Compare NWS forecast against Kalshi implied probability.
+
+        For KXHIGH/KXLOW/KXRAIN: attempts NWS forecast lookup, falls back to
+        mean-reversion if the lookup fails.
+        For KXSNOW/KXWIND: uses mean-reversion directly (no NWS signal).
+        """
         series = market.series.upper()
 
+        nws_prob = None
         if series.startswith("KXHIGH") or series.startswith("KXLOW"):
             nws_prob = self._get_temp_probability(market)
         elif series.startswith("KXRAIN"):
             nws_prob = self._get_rain_probability(market)
+        elif series.startswith("KXSNOW") or series.startswith("KXWIND"):
+            # No reliable NWS signal — use mean-reversion
+            log.debug("%s — no NWS signal for %s, using mean-reversion", market.ticker, series)
+            return self._evaluate_mean_reversion(market)
         else:
-            return None
+            return self._evaluate_mean_reversion(market)
 
         if nws_prob is None:
-            return None
+            # NWS lookup failed — fall back to mean-reversion instead of skipping
+            log.info("%s — NWS lookup failed, falling back to mean-reversion", market.ticker)
+            return self._evaluate_mean_reversion(market)
 
         mid = market.mid
         edge = nws_prob - mid
@@ -146,29 +205,81 @@ class FairValueStrategy(BaseStrategy):
 
     # ── NWS helpers ──────────────────────────────────────────────────────────
 
-    def _get_forecast(self) -> Optional[dict]:
-        office_key = config.WEATHER_NWS_OFFICE
-        if office_key in self._forecast_cache:
-            return self._forecast_cache[office_key]
+    def _resolve_city(self, market: CandidateMarket) -> Optional[str]:
+        """Extract city name from ticker or title."""
+        # Try ticker code: e.g. KXHIGH-26MAR26-SFO-T68 → SFO
+        parts = market.ticker.upper().split("-")
+        for part in parts:
+            if part in TICKER_CITY_MAP:
+                return TICKER_CITY_MAP[part]
 
-        if office_key not in self.GRID_POINTS:
-            log.warning("No grid point for NWS office '%s'", office_key)
+        # Try title keywords
+        title_lower = market.title.lower()
+        for city_name in CITY_COORDS:
+            if city_name.lower() in title_lower:
+                return city_name
+
+        return None
+
+    def _resolve_nws_grid(self, city: str) -> Optional[tuple[str, int, int]]:
+        """Look up NWS grid (office, gridX, gridY) for a city. Results are cached."""
+        if city in self._grid_cache:
+            return self._grid_cache[city]
+
+        coords = CITY_COORDS.get(city)
+        if not coords:
+            log.warning("No coordinates for city '%s'", city)
             return None
 
-        office, grid_x, grid_y = self.GRID_POINTS[office_key]
+        lat, lon = coords
+        url = f"{self.NWS_BASE}/points/{lat},{lon}"
+        try:
+            resp = requests.get(url, timeout=10, headers={"User-Agent": "kalshi-bot/1.0"})
+            resp.raise_for_status()
+            props = resp.json().get("properties", {})
+            office = props.get("gridId")
+            grid_x = props.get("gridX")
+            grid_y = props.get("gridY")
+            if not office or grid_x is None or grid_y is None:
+                log.warning("NWS /points response missing grid data for %s", city)
+                return None
+            result = (office, int(grid_x), int(grid_y))
+            self._grid_cache[city] = result
+            log.info("Resolved NWS grid for %s: %s %d,%d", city, *result)
+            return result
+        except Exception as e:
+            log.error("NWS grid resolution failed for %s: %s", city, e)
+            return None
+
+    def _get_forecast(self, market: CandidateMarket) -> Optional[dict]:
+        """Fetch NWS forecast for the city in a market. Dynamically resolves the grid."""
+        city = self._resolve_city(market)
+        if not city:
+            log.debug("Could not determine city for %s", market.ticker)
+            return None
+
+        cache_key = city
+        if cache_key in self._forecast_cache:
+            return self._forecast_cache[cache_key]
+
+        grid = self._resolve_nws_grid(city)
+        if not grid:
+            return None
+
+        office, grid_x, grid_y = grid
         url = f"{self.NWS_BASE}/gridpoints/{office}/{grid_x},{grid_y}/forecast"
         try:
             resp = requests.get(url, timeout=10, headers={"User-Agent": "kalshi-bot/1.0"})
             resp.raise_for_status()
             data = resp.json()
-            self._forecast_cache[office_key] = data
+            self._forecast_cache[cache_key] = data
             return data
         except Exception as e:
-            log.error("NWS forecast fetch failed: %s", e)
+            log.error("NWS forecast fetch failed for %s: %s", city, e)
             return None
 
     def _get_temp_probability(self, market: CandidateMarket) -> Optional[float]:
-        forecast = self._get_forecast()
+        forecast = self._get_forecast(market)
         if not forecast:
             return None
 
@@ -185,7 +296,7 @@ class FairValueStrategy(BaseStrategy):
         return 0.5 * (1 + erf(z))
 
     def _get_rain_probability(self, market: CandidateMarket) -> Optional[float]:
-        forecast = self._get_forecast()
+        forecast = self._get_forecast(market)
         if not forecast:
             return None
 

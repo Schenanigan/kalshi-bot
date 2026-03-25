@@ -59,13 +59,22 @@ def generate_fake_markets() -> list[dict]:
     now = datetime.datetime.now(datetime.timezone.utc)
     markets = []
 
-    # Weather markets (various cities / temp thresholds)
+    # Weather markets (various cities / temp thresholds / types)
     weather_tickers = [
-        ("KXHIGH-26MAR26-SFO-T68", "Will the high in SF be above 68°F on Mar 26?", "KXHIGH"),
-        ("KXHIGH-26MAR26-NYC-T55", "Will the high in NYC be above 55°F on Mar 26?", "KXHIGH"),
+        ("KXHIGH-26MAR26-SFO-T68", "Will the high in San Francisco be above 68°F on Mar 26?", "KXHIGH"),
+        ("KXHIGH-26MAR26-NYC-T55", "Will the high in New York be above 55°F on Mar 26?", "KXHIGH"),
         ("KXRAIN-26MAR26-CHI", "Will it rain in Chicago on Mar 26?", "KXRAIN"),
         ("KXLOW-26MAR26-MIA-T60", "Will the low in Miami be above 60°F on Mar 26?", "KXLOW"),
-        ("KXHIGH-27MAR26-LAX-T75", "Will the high in LA be above 75°F on Mar 27?", "KXHIGH"),
+        ("KXHIGH-27MAR26-LAX-T75", "Will the high in Los Angeles be above 75°F on Mar 27?", "KXHIGH"),
+        ("KXHIGH-26MAR26-DEN-T62", "Will the high in Denver be above 62°F on Mar 26?", "KXHIGH"),
+        ("KXRAIN-26MAR26-SEA", "Will it rain in Seattle on Mar 26?", "KXRAIN"),
+        ("KXHIGH-26MAR26-ATL-T70", "Will the high in Atlanta be above 70°F on Mar 26?", "KXHIGH"),
+        ("KXLOW-26MAR26-BOS-T38", "Will the low in Boston be above 38°F on Mar 26?", "KXLOW"),
+        ("KXHIGH-26MAR26-HOU-T78", "Will the high in Houston be above 78°F on Mar 26?", "KXHIGH"),
+        ("KXSNOW-26MAR26-DEN", "Will it snow in Denver on Mar 26?", "KXSNOW"),
+        ("KXSNOW-26MAR26-CHI", "Will it snow in Chicago on Mar 26?", "KXSNOW"),
+        ("KXWIND-26MAR26-NYC", "Will wind exceed 25 mph in New York on Mar 26?", "KXWIND"),
+        ("KXWIND-26MAR26-PHX", "Will wind exceed 20 mph in Phoenix on Mar 26?", "KXWIND"),
     ]
     for ticker, title, series in weather_tickers:
         yes_bid = random.randint(15, 85)
@@ -272,8 +281,13 @@ def run(cfg: BotConfig):
 
                 if cfg.include_weather:
                     from config import WEATHER_SERIES_PREFIXES
+                    # Only fetch weather markets expiring within 48 hours
+                    weather_max_close = now_ts + (48 * 60 * 60)
                     for prefix in WEATHER_SERIES_PREFIXES:
-                        weather = client.get_markets(series=prefix, limit=200, paginate=False)
+                        weather = client.get_markets(
+                            series=prefix, limit=200, paginate=False,
+                            min_close_ts=now_ts, max_close_ts=weather_max_close,
+                        )
                         raw_markets.extend(weather)
                         time.sleep(0.3)
 
