@@ -15,6 +15,7 @@ Start it from bot.py:
 """
 
 from __future__ import annotations
+import os
 import threading
 import time
 import datetime
@@ -228,7 +229,9 @@ class MetricsServer:
         def health():
             return {"ok": True}
 
-        config = uvicorn.Config(app, host="127.0.0.1", port=self.port,
+        host = os.environ.get("METRICS_HOST", "127.0.0.1")
+        port = int(os.environ.get("PORT", self.port))
+        config = uvicorn.Config(app, host=host, port=port,
                                 log_level="warning", loop="asyncio")
         self._server = uvicorn.Server(config)
 
@@ -239,7 +242,7 @@ class MetricsServer:
         self._thread = threading.Thread(target=_run, daemon=True, name="metrics-server")
         self._thread.start()
         time.sleep(0.5)  # give uvicorn a moment
-        log.info("Metrics server listening on http://127.0.0.1:%d/metrics", self.port)
+        log.info("Metrics server listening on http://%s:%d/metrics", host, port)
 
     def stop(self):
         if self._server:

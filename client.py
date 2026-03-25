@@ -7,6 +7,7 @@ Kalshi uses RSA-PSS key-pair authentication:
   - Headers: KALSHI-ACCESS-KEY, KALSHI-ACCESS-TIMESTAMP, KALSHI-ACCESS-SIGNATURE
 """
 
+import os
 import time
 import base64
 import logging
@@ -43,7 +44,16 @@ class KalshiClient:
 
     @staticmethod
     def _load_private_key(key_path: str):
-        """Load RSA private key from PEM file."""
+        """Load RSA private key from KALSHI_KEY_B64 env var (base64-encoded PEM) or PEM file."""
+        key_b64 = os.environ.get("KALSHI_KEY_B64", "")
+        if key_b64:
+            try:
+                pem_bytes = base64.b64decode(key_b64)
+                log.info("Loaded private key from KALSHI_KEY_B64 env var")
+                return serialization.load_pem_private_key(pem_bytes, password=None)
+            except Exception as e:
+                log.error("Failed to decode KALSHI_KEY_B64: %s", e)
+                return None
         try:
             with open(key_path, "rb") as f:
                 return serialization.load_pem_private_key(f.read(), password=None)

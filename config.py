@@ -55,7 +55,7 @@ DEFAULT_MAX_SPREAD    = 0.40
 
 @dataclass
 class BotConfig:
-    api_key: str = "026a0b94-b04e-4b59-8a8d-24862aa3fda4"
+    api_key: str = ""
     private_key_path: str = "kalshi_key.pem"
     demo: bool = True
     dry_run: bool = True
