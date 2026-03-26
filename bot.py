@@ -29,14 +29,17 @@ from risk import RiskManager, RiskConfig
 from metrics import MetricsServer
 
 # ── Logging ───────────────────────────────────────────────────────────────────
+_log_handlers = [logging.StreamHandler(sys.stdout)]
+try:
+    _log_handlers.append(logging.FileHandler("bot.log"))
+except OSError:
+    pass  # skip file logging if not writable (e.g. containers)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s — %(message)s",
     datefmt="%H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("bot.log"),
-    ],
+    handlers=_log_handlers,
 )
 log = logging.getLogger("bot")
 
@@ -185,6 +188,7 @@ def execute(
             side=intent.side,
             count=intent.count,
             limit_price=intent.limit_price,
+            action=intent.action,
         )
         order_id = result.get("order", {}).get("order_id", "?")
         log.info("Order placed: %s", order_id)
@@ -366,6 +370,7 @@ def run(cfg: BotConfig):
                                 client.place_order(
                                     ticker=exit_intent.ticker, side=exit_intent.side,
                                     count=exit_intent.count, limit_price=exit_intent.limit_price,
+                                    action=exit_intent.action,
                                 )
                             except Exception as e:
                                 log.error("Exit order failed %s: %s", ticker, e)

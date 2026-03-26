@@ -229,8 +229,14 @@ class MetricsServer:
         def health():
             return {"ok": True}
 
-        host = os.environ.get("METRICS_HOST", "127.0.0.1")
-        port = int(os.environ.get("PORT", self.port))
+        # Auto-bind to all interfaces when PORT is set (Railway/containers)
+        port_env = os.environ.get("PORT", "")
+        if port_env:
+            host = "0.0.0.0"
+            port = int(port_env)
+        else:
+            host = "127.0.0.1"
+            port = self.port
         config = uvicorn.Config(app, host=host, port=port,
                                 log_level="warning", loop="asyncio")
         self._server = uvicorn.Server(config)

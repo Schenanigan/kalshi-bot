@@ -10,7 +10,7 @@ import logging
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from math import erf, sqrt, log as ln
+from math import erf, sqrt
 from typing import Optional
 
 import requests
@@ -85,6 +85,7 @@ class OrderIntent:
     count: int          # number of contracts
     limit_price: int    # cents (1–99)
     reason: str         # human-readable rationale
+    action: str = "buy" # "buy" for entries, "sell" for exits
 
 
 # ── Base ──────────────────────────────────────────────────────────────────────
@@ -155,14 +156,14 @@ class FairValueStrategy(BaseStrategy):
         mid = market.mid
 
         if position.side == "yes":
-            # We're long YES. Fair value says YES is worth nws_prob.
-            # Exit if our position is now -EV: nws_prob < entry price
+            # We're long YES. Exit if fair value dropped below entry.
             if nws_prob < entry_price_frac:
                 sell_price = max(int(market.yes_bid * 100), 1)
                 return OrderIntent(
-                    ticker=position.ticker, side="no",
+                    ticker=position.ticker, side="yes",
                     count=position.count, limit_price=sell_price,
                     reason=f"EXIT: NWS {nws_prob:.0%} flipped below entry {entry_price_frac:.0%}",
+                    action="sell",
                 )
         else:
             # We're long NO. NO fair value = 1 - nws_prob.
@@ -171,9 +172,10 @@ class FairValueStrategy(BaseStrategy):
                 no_bid = 1.0 - market.yes_ask
                 sell_price = max(int(no_bid * 100), 1)
                 return OrderIntent(
-                    ticker=position.ticker, side="yes",
+                    ticker=position.ticker, side="no",
                     count=position.count, limit_price=sell_price,
                     reason=f"EXIT: NWS flipped, NO fair {no_fair:.0%} below entry {entry_price_frac:.0%}",
+                    action="sell",
                 )
 
         return None
@@ -484,14 +486,14 @@ class ExpiryMomentumStrategy(BaseStrategy):
         if pnl_pct <= -config.TRAILING_STOP_PCT:
             if position.side == "yes":
                 sell_price = max(int(market.yes_bid * 100), 1)
-                exit_side = "no"
             else:
-                sell_price = max(int((1.0 - market.yes_ask) * 100), 1)
-                exit_side = "yes"
+                no_bid = 1.0 - market.yes_ask
+                sell_price = max(int(no_bid * 100), 1)
             return OrderIntent(
-                ticker=position.ticker, side=exit_side,
+                ticker=position.ticker, side=position.side,
                 count=position.count, limit_price=sell_price,
                 reason=f"STOP: {pnl_pct:+.0%} loss on {position.side.upper()} (entry {entry_frac:.0%})",
+                action="sell",
             )
 
         return None

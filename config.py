@@ -48,7 +48,6 @@ MAX_KELLY_FRACTION   = 0.25    # quarter-Kelly cap on position sizing
 
 # Exit management
 TRAILING_STOP_PCT    = 0.50    # exit if mark-to-market loss exceeds 50% of entry cost
-PROFIT_TAKE_PCT      = 0.50    # take profit when 50%+ of remaining edge captured
 
 # Scan
 DEFAULT_SCAN_INTERVAL = 30
