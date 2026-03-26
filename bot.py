@@ -29,14 +29,17 @@ from risk import RiskManager, RiskConfig
 from metrics import MetricsServer
 
 # ── Logging ───────────────────────────────────────────────────────────────────
+_log_handlers = [logging.StreamHandler(sys.stdout)]
+try:
+    _log_handlers.append(logging.FileHandler("bot.log"))
+except OSError:
+    pass  # skip file logging if not writable (e.g. in containers)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s — %(message)s",
     datefmt="%H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("bot.log"),
-    ],
+    handlers=_log_handlers,
 )
 log = logging.getLogger("bot")
 
