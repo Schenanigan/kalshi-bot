@@ -124,7 +124,7 @@ If `RAILWAY_METRICS_URL` is not set, the dashboard falls back to simulated demo 
 | `KALSHI_INCLUDE_WEATHER` | `true` | Enable weather strategies |
 | `KALSHI_INCLUDE_EXPIRING` | `true` | Enable expiring strategies |
 | `KALSHI_MIN_VOLUME` | `0` | Minimum 24h volume filter |
-| `KALSHI_MAX_SPREAD` | `0.40` | Maximum spread tolerance ($) |
+| `KALSHI_MAX_SPREAD` | `0.15` | Maximum spread tolerance ($) |
 | `KALSHI_STRATEGIES` | `all` | Active strategies (comma-separated) |
 | `KALSHI_MAX_TRADE` | `25.0` | Max per-trade risk ($) |
 | `KALSHI_MAX_POSITIONS` | `10` | Max concurrent positions |
@@ -151,9 +151,9 @@ Trades **any** expiring weather market across all US cities. The bot:
 Supported weather market types:
 - **KXHIGH / KXLOW** (temperature): uses a normal distribution around the NWS forecast (+/-3F)
 - **KXRAIN** (precipitation): uses NWS PoP (Probability of Precipitation) directly
-- **KXSNOW / KXWIND** (snow, wind): falls back to mean-reversion heuristic
+- **KXSNOW / KXWIND** (snow, wind): skipped (no reliable NWS signal)
 
-When NWS lookup fails for any reason, the bot falls back to mean-reversion instead of skipping the market.
+When NWS lookup fails for any reason, the bot skips the market (no-edge-no-trade policy).
 
 Edge threshold: 8c (configurable via `WEATHER_EDGE_THRESHOLD`)
 

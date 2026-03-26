@@ -85,9 +85,19 @@ class OrderIntent:
     count: int          # number of contracts
     limit_price: int    # cents (1–99)
     reason: str         # human-readable rationale
+    action: str = "buy" # "buy" for entries, "sell" for exits
 
 
 # ── Base ──────────────────────────────────────────────────────────────────────
+
+@dataclass
+class PositionInfo:
+    """Minimal position data needed for exit evaluation."""
+    ticker: str
+    side: str           # "yes" or "no"
+    count: int          # contracts held
+    entry_price: int    # average entry price in cents
+
 
 class BaseStrategy(ABC):
     name: str = "base"
@@ -95,6 +105,11 @@ class BaseStrategy(ABC):
     @abstractmethod
     def evaluate(self, market: CandidateMarket, orderbook: dict) -> Optional[OrderIntent]:
         """Return an OrderIntent if there's an edge, else None."""
+
+    def evaluate_exit(self, position: PositionInfo, market: CandidateMarket, orderbook: dict) -> Optional[OrderIntent]:
+        """Return an exit OrderIntent if the position should be closed, else None.
+        Default: no exit logic. Override in subclasses."""
+        return None
 
 
 # ── FairValueStrategy (weather / obscure markets) ────────────────────────────
@@ -122,35 +137,53 @@ class FairValueStrategy(BaseStrategy):
         else:
             return self._evaluate_mean_reversion(market)
 
-    def _evaluate_mean_reversion(self, market: CandidateMarket) -> Optional[OrderIntent]:
-        """Fade prices far from 50c on low-volume / obscure markets."""
-        mid = market.mid
-        fair = 0.50  # assume 50/50 for obscure markets with no signal
-
-        edge = fair - mid  # positive means YES is cheap
-
-        if abs(edge) < config.WEATHER_EDGE_THRESHOLD:
+    def evaluate_exit(self, position: PositionInfo, market: CandidateMarket, orderbook: dict) -> Optional[OrderIntent]:
+        """Exit weather positions if fair value has flipped against us."""
+        if "weather" not in market.tags:
             return None
 
-        if edge > 0:
-            # YES looks cheap — buy YES
-            price_cents = min(int(market.yes_ask * 100) + 1, 99)
-            return OrderIntent(
-                ticker=market.ticker, side="yes",
-                count=config.DEFAULT_ORDER_SIZE,
-                limit_price=price_cents,
-                reason=f"Fair value: YES mid {mid:.0%} below fair {fair:.0%}",
-            )
+        series = market.series.upper()
+        nws_prob = None
+        if series.startswith("KXHIGH") or series.startswith("KXLOW"):
+            nws_prob = self._get_temp_probability(market)
+        elif series.startswith("KXRAIN"):
+            nws_prob = self._get_rain_probability(market)
+
+        if nws_prob is None:
+            return None
+
+        entry_price_frac = position.entry_price / 100
+        mid = market.mid
+
+        if position.side == "yes":
+            # We're long YES. Exit if fair value dropped below entry.
+            if nws_prob < entry_price_frac:
+                sell_price = max(int(market.yes_bid * 100), 1)
+                return OrderIntent(
+                    ticker=position.ticker, side="yes",
+                    count=position.count, limit_price=sell_price,
+                    reason=f"EXIT: NWS {nws_prob:.0%} flipped below entry {entry_price_frac:.0%}",
+                    action="sell",
+                )
         else:
-            # NO looks cheap — buy NO
-            no_ask = 1.0 - market.yes_bid
-            price_cents = min(int(no_ask * 100) + 1, 99)
-            return OrderIntent(
-                ticker=market.ticker, side="no",
-                count=config.DEFAULT_ORDER_SIZE,
-                limit_price=price_cents,
-                reason=f"Fair value: NO mid {1-mid:.0%} below fair {1-fair:.0%}",
-            )
+            # We're long NO. NO fair value = 1 - nws_prob.
+            no_fair = 1.0 - nws_prob
+            if no_fair < entry_price_frac:
+                no_bid = 1.0 - market.yes_ask
+                sell_price = max(int(no_bid * 100), 1)
+                return OrderIntent(
+                    ticker=position.ticker, side="no",
+                    count=position.count, limit_price=sell_price,
+                    reason=f"EXIT: NWS flipped, NO fair {no_fair:.0%} below entry {entry_price_frac:.0%}",
+                    action="sell",
+                )
+
+        return None
+
+    def _evaluate_mean_reversion(self, market: CandidateMarket) -> Optional[OrderIntent]:
+        """No model = no edge = no trade. Refuse to gamble on unknown markets."""
+        log.debug("%s — no fair value model, skipping (no-edge-no-trade policy)", market.ticker)
+        return None
 
     def _evaluate_weather(self, market: CandidateMarket) -> Optional[OrderIntent]:
         """Compare NWS forecast against Kalshi implied probability.
@@ -185,22 +218,29 @@ class FairValueStrategy(BaseStrategy):
             log.debug("%s — weather edge %.1f¢ below threshold", market.ticker, abs(edge) * 100)
             return None
 
+        # Concave sizing: sqrt scaling dampens extreme signals
+        base = config.DEFAULT_ORDER_SIZE
+        size = max(config.MIN_ORDER_SIZE, min(
+            int(base * sqrt(abs(edge) / config.WEATHER_EDGE_THRESHOLD)),
+            config.MAX_POSITION_PER_MARKET,
+        ))
+
         if edge > 0:
             price_cents = min(int(market.yes_ask * 100) + 1, 99)
             return OrderIntent(
                 ticker=market.ticker, side="yes",
-                count=config.DEFAULT_ORDER_SIZE,
+                count=size,
                 limit_price=price_cents,
-                reason=f"Weather: NWS {nws_prob:.0%} vs market {mid:.0%}",
+                reason=f"Weather: NWS {nws_prob:.0%} vs market {mid:.0%} (edge {abs(edge):.1%})",
             )
         else:
             no_ask = 1.0 - market.yes_bid
             price_cents = min(int(no_ask * 100) + 1, 99)
             return OrderIntent(
                 ticker=market.ticker, side="no",
-                count=config.DEFAULT_ORDER_SIZE,
+                count=size,
                 limit_price=price_cents,
-                reason=f"Weather: NWS {nws_prob:.0%} vs market {mid:.0%} (fade YES)",
+                reason=f"Weather: NWS {nws_prob:.0%} vs market {mid:.0%} (fade YES, edge {abs(edge):.1%})",
             )
 
     # ── NWS helpers ──────────────────────────────────────────────────────────
@@ -369,28 +409,35 @@ class ExpiryMomentumStrategy(BaseStrategy):
         # Momentum: ride high-probability markets toward 1.0
         if mid >= 0.70:
             price_cents = min(int(ask * 100) + 1, 95)  # cap at 95c
-            edge = 1.0 - ask  # potential profit if resolves YES
-            if edge < config.EXPIRING_EDGE_THRESHOLD:
+            cost = ask  # what we pay per contract
+            implied_prob = mid  # market's implied probability
+            # EV check: only trade if expected value is positive
+            ev = implied_prob * (1.0 - cost) - (1.0 - implied_prob) * cost
+            if ev < config.EXPIRING_EDGE_THRESHOLD:
+                log.debug("%s — YES EV %.1f¢ below threshold", market.ticker, ev * 100)
                 return None
-            size = self._size(edge)
+            size = self._size(ev, cost)
             return OrderIntent(
                 ticker=market.ticker, side="yes", count=size,
                 limit_price=price_cents,
-                reason=f"Expiry momentum: YES mid {mid:.0%}, {market.minutes_to_close:.0f}min left",
+                reason=f"Expiry momentum: YES EV {ev:.1%}, mid {mid:.0%}, {market.minutes_to_close:.0f}min left",
             )
 
         # Momentum: ride low-probability markets toward 0.0
         if mid <= 0.30:
             no_ask = 1.0 - bid
             price_cents = min(int(no_ask * 100) + 1, 95)
-            edge = bid  # potential profit if resolves NO (= 1.0 - 0.0 - no_price ~ bid)
-            if edge < config.EXPIRING_EDGE_THRESHOLD:
+            cost = no_ask
+            implied_prob = 1.0 - mid  # probability of NO resolution
+            ev = implied_prob * (1.0 - cost) - (1.0 - implied_prob) * cost
+            if ev < config.EXPIRING_EDGE_THRESHOLD:
+                log.debug("%s — NO EV %.1f¢ below threshold", market.ticker, ev * 100)
                 return None
-            size = self._size(edge)
+            size = self._size(ev, cost)
             return OrderIntent(
                 ticker=market.ticker, side="no", count=size,
                 limit_price=price_cents,
-                reason=f"Expiry momentum: NO mid {1-mid:.0%}, {market.minutes_to_close:.0f}min left",
+                reason=f"Expiry momentum: NO EV {ev:.1%}, mid {1-mid:.0%}, {market.minutes_to_close:.0f}min left",
             )
 
         # Mid-range: look for dislocated ask (panicked sellers)
@@ -405,7 +452,7 @@ class ExpiryMomentumStrategy(BaseStrategy):
             price_cents = min(int((ask + config.LIMIT_PRICE_BUFFER) * 100), 99)
             return OrderIntent(
                 ticker=market.ticker, side="yes",
-                count=self._size(yes_edge),
+                count=self._size(yes_edge, ask),
                 limit_price=price_cents,
                 reason=f"Expiry dislocation: YES ask {ask:.0%} < mid {mid:.0%}, {market.minutes_to_close:.0f}min",
             )
@@ -414,14 +461,63 @@ class ExpiryMomentumStrategy(BaseStrategy):
             price_cents = min(int(no_price * 100), 99)
             return OrderIntent(
                 ticker=market.ticker, side="no",
-                count=self._size(no_edge),
+                count=self._size(no_edge, 1.0 - bid),
                 limit_price=price_cents,
                 reason=f"Expiry dislocation: NO bid {1-bid:.0%} < mid {1-mid:.0%}, {market.minutes_to_close:.0f}min",
             )
 
+    def evaluate_exit(self, position: PositionInfo, market: CandidateMarket, orderbook: dict) -> Optional[OrderIntent]:
+        """Exit expiring positions via trailing stop or profit-taking."""
+        if "expiring" not in market.tags:
+            return None
+
+        entry_frac = position.entry_price / 100
+        mid = market.mid
+
+        if position.side == "yes":
+            mark = market.yes_bid  # what we could sell for
+            pnl_pct = (mark - entry_frac) / entry_frac if entry_frac > 0 else 0
+        else:
+            no_bid = 1.0 - market.yes_ask
+            mark = no_bid
+            pnl_pct = (mark - entry_frac) / entry_frac if entry_frac > 0 else 0
+
+        # Trailing stop: exit if loss exceeds threshold
+        if pnl_pct <= -config.TRAILING_STOP_PCT:
+            if position.side == "yes":
+                sell_price = max(int(market.yes_bid * 100), 1)
+            else:
+                no_bid = 1.0 - market.yes_ask
+                sell_price = max(int(no_bid * 100), 1)
+            return OrderIntent(
+                ticker=position.ticker, side=position.side,
+                count=position.count, limit_price=sell_price,
+                reason=f"STOP: {pnl_pct:+.0%} loss on {position.side.upper()} (entry {entry_frac:.0%})",
+                action="sell",
+            )
+
+        return None
+
     @staticmethod
-    def _size(edge: float) -> int:
-        """Scale size linearly with edge, capped."""
+    def _size(ev: float, cost: float) -> int:
+        """Concave (sqrt) sizing with Kelly fraction cap.
+
+        Uses sqrt scaling to dampen exposure on extreme signals.
+        Also caps at quarter-Kelly to limit damage from model error.
+        """
         base = config.DEFAULT_ORDER_SIZE
-        scaled = int(base * (edge / config.EXPIRING_EDGE_THRESHOLD))
-        return max(config.MIN_ORDER_SIZE, min(scaled, config.MAX_POSITION_PER_MARKET))
+        threshold = config.EXPIRING_EDGE_THRESHOLD
+
+        # Concave sqrt scaling
+        sqrt_scaled = int(base * sqrt(ev / threshold))
+
+        # Kelly fraction cap: f* = edge / odds, then take quarter-Kelly
+        # For a binary: kelly = (p * b - q) / b where b = (1-cost)/cost, p = implied prob
+        # Simplified: kelly ~= ev / cost
+        if cost > 0:
+            kelly_contracts = int(base * config.MAX_KELLY_FRACTION * (ev / cost) / threshold)
+        else:
+            kelly_contracts = sqrt_scaled
+
+        size = min(sqrt_scaled, kelly_contracts)
+        return max(config.MIN_ORDER_SIZE, min(size, config.MAX_POSITION_PER_MARKET))

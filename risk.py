@@ -58,10 +58,13 @@ class RiskManager:
             len(self._open_tickers),
         )
 
-    def approve(self, intent: OrderIntent) -> Optional[str]:
+    def approve(self, intent: OrderIntent, is_exit: bool = False) -> Optional[str]:
         """
         Check whether an order should be placed.
         Returns None if approved, or a rejection reason string.
+
+        Exit orders bypass duplicate-ticker and max-position checks
+        since they reduce exposure rather than increase it.
         """
         ticker = intent.ticker
 
@@ -69,13 +72,14 @@ class RiskManager:
         if self._daily_loss >= self.cfg.max_daily_loss_dollars:
             return f"Daily loss ${self._daily_loss:.2f} >= limit ${self.cfg.max_daily_loss_dollars}"
 
-        # Check duplicate ticker
-        if not self.cfg.allow_duplicate_tickers and ticker in self._traded_tickers:
-            return f"Already traded {ticker} this session (duplicates disabled)"
+        if not is_exit:
+            # Check duplicate ticker (only for new entries)
+            if not self.cfg.allow_duplicate_tickers and ticker in self._traded_tickers:
+                return f"Already traded {ticker} this session (duplicates disabled)"
 
-        # Check max open positions
-        if ticker not in self._open_tickers and len(self._open_tickers) >= self.cfg.max_open_positions:
-            return f"Max positions ({self.cfg.max_open_positions}) already open"
+            # Check max open positions (only for new entries)
+            if ticker not in self._open_tickers and len(self._open_tickers) >= self.cfg.max_open_positions:
+                return f"Max positions ({self.cfg.max_open_positions}) already open"
 
         # Check per-trade cost
         trade_cost = (intent.limit_price / 100) * intent.count

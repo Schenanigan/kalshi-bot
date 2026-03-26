@@ -24,7 +24,7 @@ import datetime
 from config import BotConfig, load_from_env
 from client import KalshiClient
 from scanner import scan
-from strategy import FairValueStrategy, ExpiryMomentumStrategy, BaseStrategy, OrderIntent
+from strategy import FairValueStrategy, ExpiryMomentumStrategy, BaseStrategy, OrderIntent, PositionInfo
 from risk import RiskManager, RiskConfig
 from metrics import MetricsServer
 
@@ -188,6 +188,7 @@ def execute(
             side=intent.side,
             count=intent.count,
             limit_price=intent.limit_price,
+            action=intent.action,
         )
         order_id = result.get("order", {}).get("order_id", "?")
         log.info("Order placed: %s", order_id)
@@ -323,6 +324,67 @@ def run(cfg: BotConfig):
             )
             log.info("%d candidates from %d markets", len(candidates), len(raw_markets))
 
+            # ── Phase 1: Evaluate exits on open positions ────────────────
+            exited = 0
+            if positions and not SIMULATE:
+                # Build a ticker -> CandidateMarket lookup from current candidates
+                candidate_by_ticker = {c.ticker: c for c in candidates}
+
+                for pos in positions:
+                    ticker = pos.get("ticker", "")
+                    count = pos.get("position", 0)
+                    if count == 0 or ticker not in candidate_by_ticker:
+                        continue
+
+                    market = candidate_by_ticker[ticker]
+                    # Determine side and entry price from position data
+                    side = "yes" if count > 0 else "no"
+                    entry_cents = pos.get("average_price", 50)  # Kalshi returns avg price
+                    position_info = PositionInfo(
+                        ticker=ticker, side=side,
+                        count=abs(count), entry_price=entry_cents,
+                    )
+
+                    try:
+                        orderbook = client.get_orderbook(ticker)
+                    except Exception as e:
+                        log.warning("Orderbook fetch failed for exit eval %s: %s", ticker, e)
+                        orderbook = {}
+
+                    for strat in strategies:
+                        exit_intent = strat.evaluate_exit(position_info, market, orderbook)
+                        if exit_intent is None:
+                            continue
+                        rejection = risk.approve(exit_intent, is_exit=True)
+                        if rejection:
+                            log.warning("EXIT RISK BLOCK %s — %s", ticker, rejection)
+                            break
+                        label = "DRY" if cfg.dry_run else "LIVE"
+                        log.info(
+                            "[%s EXIT] %s %s×%d @ %dc | %s",
+                            label, exit_intent.ticker, exit_intent.side.upper(),
+                            exit_intent.count, exit_intent.limit_price, exit_intent.reason,
+                        )
+                        if not cfg.dry_run:
+                            try:
+                                client.place_order(
+                                    ticker=exit_intent.ticker, side=exit_intent.side,
+                                    count=exit_intent.count, limit_price=exit_intent.limit_price,
+                                    action=exit_intent.action,
+                                )
+                            except Exception as e:
+                                log.error("Exit order failed %s: %s", ticker, e)
+                        exited += 1
+                        metrics.push_order(
+                            ticker=exit_intent.ticker, side=exit_intent.side,
+                            count=exit_intent.count, price_cents=exit_intent.limit_price,
+                            status="dry_run" if cfg.dry_run else "placed",
+                            reason=exit_intent.reason, strategy=f"{strat.name}_exit",
+                        )
+                        metrics.push_log(f"EXIT {exit_intent.ticker} {exit_intent.reason}")
+                        break
+
+            # ── Phase 2: Evaluate new entries ─────────────────────────────
             placed = 0
             for market in candidates:
                 if SIMULATE:
@@ -343,8 +405,8 @@ def run(cfg: BotConfig):
                         placed += 1
                         break
 
-            log.info("Loop #%d done — %d orders", iteration, placed)
-            metrics.push_log(f"Loop #{iteration} done — {placed} orders")
+            log.info("Loop #%d done — %d entries, %d exits", iteration, placed, exited)
+            metrics.push_log(f"Loop #{iteration} done — {placed} entries, {exited} exits")
 
         except KeyboardInterrupt:
             break
