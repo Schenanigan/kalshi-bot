@@ -229,7 +229,7 @@ class MetricsServer:
         def health():
             return {"ok": True}
 
-        # Auto-bind to all interfaces when PORT is set (Railway/containers)
+        # If PORT is set (Railway/container), auto-bind to all interfaces
         port_env = os.environ.get("PORT", "")
         if port_env:
             host = "0.0.0.0"

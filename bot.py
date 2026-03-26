@@ -33,7 +33,7 @@ _log_handlers = [logging.StreamHandler(sys.stdout)]
 try:
     _log_handlers.append(logging.FileHandler("bot.log"))
 except OSError:
-    pass  # skip file logging if not writable (e.g. containers)
+    pass  # skip file logging if not writable (e.g. in containers)
 
 logging.basicConfig(
     level=logging.INFO,
