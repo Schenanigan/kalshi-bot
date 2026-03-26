@@ -15,16 +15,17 @@ import sys
 import time
 from datetime import datetime, timezone, timedelta
 
-from collector import Collector, DB_PATH
+import db as database
+from collector import Collector
 from config import WEATHER_SERIES_PREFIXES
 
 log = logging.getLogger(__name__)
 
 
 class HistoricalScraper:
-    def __init__(self, client, db_path: str = str(DB_PATH)):
+    def __init__(self, client):
         self.client = client
-        self.col = Collector(db_path)
+        self.col = Collector()
 
     def scrape_settled(
         self,
@@ -80,27 +81,27 @@ class HistoricalScraper:
         If ticker is None, generates for all outcomes without snapshots.
         Returns count of snapshots generated.
         """
+        p = database.ph()
         if ticker:
-            outcomes = self.col.conn.execute(
-                "SELECT * FROM market_outcomes WHERE ticker = ?", (ticker,)
-            ).fetchall()
+            outcomes = database.fetchall_dicts(
+                self.col.conn,
+                f"SELECT * FROM market_outcomes WHERE ticker = {p}", (ticker,)
+            )
         else:
-            # Find outcomes with no snapshots
-            outcomes = self.col.conn.execute("""
-                SELECT o.* FROM market_outcomes o
-                LEFT JOIN market_snapshots s ON o.ticker = s.ticker
-                WHERE s.ticker IS NULL
-            """).fetchall()
+            outcomes = database.fetchall_dicts(
+                self.col.conn,
+                """SELECT o.* FROM market_outcomes o
+                   LEFT JOIN market_snapshots s ON o.ticker = s.ticker
+                   WHERE s.ticker IS NULL"""
+            )
 
         if not outcomes:
             log.info("No outcomes need synthetic snapshots")
             return 0
 
-        cols = [d[0] for d in self.col.conn.execute("SELECT * FROM market_outcomes LIMIT 0").description]
         total = 0
 
-        for row in outcomes:
-            outcome = dict(zip(cols, row))
+        for outcome in outcomes:
             count = self._generate_path(outcome, num_snapshots, hours_before_close)
             total += count
 
@@ -170,11 +171,13 @@ class HistoricalScraper:
             ))
 
         if rows:
-            self.col.conn.executemany(
-                """INSERT INTO market_snapshots
+            p = database.ph()
+            database.executemany(
+                self.col.conn,
+                f"""INSERT INTO market_snapshots
                    (snapshot_time, ticker, title, series, yes_bid, yes_ask, mid,
                     volume, close_time, minutes_to_close, tags, raw)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})""",
                 rows,
             )
             self.col.conn.commit()

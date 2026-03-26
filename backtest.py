@@ -10,7 +10,6 @@ Usage:
 
 import json
 import logging
-import sqlite3
 import sys
 import uuid
 from dataclasses import dataclass, field, asdict
@@ -20,12 +19,11 @@ from math import sqrt
 from typing import Optional
 
 import config
+import db as database
 from scanner import CandidateMarket
 from strategy import FairValueStrategy, ExpiryMomentumStrategy, BaseStrategy
 
 log = logging.getLogger(__name__)
-
-DB_PATH = "data/kalshi.db"
 
 
 @dataclass
@@ -66,10 +64,10 @@ class BacktestResult:
 
 
 class BacktestEngine:
-    def __init__(self, db_path: str = DB_PATH):
-        self.db_path = db_path
-        self.conn = sqlite3.connect(db_path)
-        self.conn.row_factory = sqlite3.Row
+    def __init__(self):
+        self.conn = database.get_connection()
+        database.init_db(self.conn)
+        self._ph = database.ph()
 
     def run(self, cfg: BacktestConfig) -> BacktestResult:
         run_id = str(uuid.uuid4())[:8]
@@ -151,11 +149,19 @@ class BacktestEngine:
 
     def save_results(self, result: BacktestResult):
         """Persist backtest results to DB."""
-        self.conn.execute(
-            """INSERT OR REPLACE INTO backtest_runs
+        p = self._ph
+        # Delete existing run if re-running same ID
+        database.execute(self.conn,
+            f"DELETE FROM backtest_trades WHERE run_id = {p}", (result.run_id,))
+        database.execute(self.conn,
+            f"DELETE FROM backtest_runs WHERE run_id = {p}", (result.run_id,))
+
+        database.execute(
+            self.conn,
+            f"""INSERT INTO backtest_runs
                (run_id, started_at, params, strategy, total_trades,
                 win_rate, total_pnl, sharpe_ratio, max_drawdown)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+               VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p})""",
             (
                 result.run_id,
                 datetime.now(timezone.utc).isoformat(),
@@ -169,11 +175,12 @@ class BacktestEngine:
             ),
         )
         for t in result.trades:
-            self.conn.execute(
-                """INSERT INTO backtest_trades
+            database.execute(
+                self.conn,
+                f"""INSERT INTO backtest_trades
                    (run_id, strategy, ticker, side, action, count,
                     limit_price, reason, snapshot_time, outcome, pnl_cents)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})""",
                 (
                     result.run_id, t.strategy, t.ticker, t.side, t.action,
                     t.count, t.entry_price, t.reason, t.snapshot_time,
@@ -220,40 +227,41 @@ class BacktestEngine:
         return cls()
 
     def _fetch_outcomes(self, cfg: BacktestConfig) -> list[dict]:
+        p = self._ph
         query = "SELECT * FROM market_outcomes WHERE 1=1"
         params = []
 
         if cfg.start_date:
-            query += " AND close_time >= ?"
+            query += f" AND close_time >= {p}"
             params.append(cfg.start_date)
         if cfg.end_date:
-            query += " AND close_time <= ?"
+            query += f" AND close_time <= {p}"
             params.append(cfg.end_date)
         if cfg.series_filter:
-            placeholders = ",".join("?" * len(cfg.series_filter))
+            placeholders = ",".join(p for _ in cfg.series_filter)
             query += f" AND series IN ({placeholders})"
             params.extend(cfg.series_filter)
 
         query += " AND result IN ('yes', 'no')"
         query += " ORDER BY close_time ASC"
 
-        rows = self.conn.execute(query, params).fetchall()
-        return [dict(r) for r in rows]
+        return database.fetchall_dicts(self.conn, query, tuple(params))
 
     def _fetch_snapshots(self, ticker: str) -> list[dict]:
-        rows = self.conn.execute(
-            """SELECT * FROM market_snapshots
-               WHERE ticker = ?
-               ORDER BY snapshot_time ASC""",
+        p = self._ph
+        return database.fetchall_dicts(
+            self.conn,
+            f"SELECT * FROM market_snapshots WHERE ticker = {p} ORDER BY snapshot_time ASC",
             (ticker,),
-        ).fetchall()
-        return [dict(r) for r in rows]
+        )
 
     def _reconstruct_candidate(self, snap: dict) -> Optional[CandidateMarket]:
         """Build a CandidateMarket from a database snapshot row."""
         try:
-            close_time = datetime.fromisoformat(snap["close_time"].replace("Z", "+00:00"))
-            snap_time = datetime.fromisoformat(snap["snapshot_time"].replace("Z", "+00:00"))
+            ct = snap["close_time"]
+            st = snap["snapshot_time"]
+            close_time = ct if isinstance(ct, datetime) else datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
+            snap_time = st if isinstance(st, datetime) else datetime.fromisoformat(str(st).replace("Z", "+00:00"))
             minutes_to_close = (close_time - snap_time).total_seconds() / 60
 
             if minutes_to_close < 0:

@@ -10,16 +10,14 @@ import csv
 import json
 import logging
 import math
-import sqlite3
 import sys
 from dataclasses import dataclass, fields, asdict
 from typing import Optional
 
+import db as database
 from config import WEATHER_SERIES_PREFIXES
 
 log = logging.getLogger(__name__)
-
-DB_PATH = "data/kalshi.db"
 
 
 @dataclass
@@ -51,9 +49,10 @@ class FeatureRow:
 
 
 class FeatureExtractor:
-    def __init__(self, db_path: str = DB_PATH):
-        self.conn = sqlite3.connect(db_path)
-        self.conn.row_factory = sqlite3.Row
+    def __init__(self):
+        self.conn = database.get_connection()
+        database.init_db(self.conn)
+        self._ph = database.ph()
 
     def extract_all(
         self,
@@ -62,15 +61,17 @@ class FeatureExtractor:
     ) -> list[FeatureRow]:
         """Extract features for all snapshots that have a matching outcome."""
         # Get tickers with outcomes
+        p = self._ph
         query = "SELECT ticker, result FROM market_outcomes WHERE result IN ('yes', 'no')"
         params = []
         if series_filter:
-            placeholders = ",".join("?" * len(series_filter))
+            placeholders = ",".join(p for _ in series_filter)
             query += f" AND series IN ({placeholders})"
             params.extend(series_filter)
 
+        outcome_rows = database.fetchall_dicts(self.conn, query, tuple(params))
         outcomes = {}
-        for row in self.conn.execute(query, params):
+        for row in outcome_rows:
             outcomes[row["ticker"]] = 1 if row["result"] == "yes" else 0
 
         if not outcomes:
@@ -81,16 +82,14 @@ class FeatureExtractor:
         processed = 0
 
         for ticker, outcome_label in outcomes.items():
-            snapshots = self.conn.execute(
-                """SELECT * FROM market_snapshots
-                   WHERE ticker = ? ORDER BY snapshot_time ASC""",
+            snap_dicts = database.fetchall_dicts(
+                self.conn,
+                f"SELECT * FROM market_snapshots WHERE ticker = {p} ORDER BY snapshot_time ASC",
                 (ticker,),
-            ).fetchall()
+            )
 
-            if len(snapshots) < min_snapshots:
+            if len(snap_dicts) < min_snapshots:
                 continue
-
-            snap_dicts = [dict(s) for s in snapshots]
             mids = [s["mid"] for s in snap_dicts]
             spreads = [s["yes_ask"] - s["yes_bid"] for s in snap_dicts]
             volumes = [s["volume"] or 0 for s in snap_dicts]

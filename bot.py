@@ -27,6 +27,7 @@ from scanner import scan
 from strategy import FairValueStrategy, ExpiryMomentumStrategy, BaseStrategy, OrderIntent, PositionInfo
 from risk import RiskManager, RiskConfig
 from metrics import MetricsServer
+from collector import Collector
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 _log_handlers = [logging.StreamHandler(sys.stdout)]
@@ -229,6 +230,14 @@ def run(cfg: BotConfig):
     )
     metrics.push_log("Bot started")
 
+    # Data collector (records snapshots to Postgres/SQLite)
+    try:
+        collector = Collector()
+        log.info("Data collector initialized")
+    except Exception as e:
+        log.warning("Data collector unavailable: %s (snapshots will not be recorded)", e)
+        collector = None
+
     client    = KalshiClient(cfg.api_key or "simulate", cfg.private_key_path, demo=cfg.demo) if not SIMULATE else None
     risk      = RiskManager(RiskConfig(
         max_trade_dollars      = cfg.max_trade_dollars,
@@ -323,6 +332,13 @@ def run(cfg: BotConfig):
                 },
             )
             log.info("%d candidates from %d markets", len(candidates), len(raw_markets))
+
+            # Record snapshots for backtesting
+            if collector and candidates:
+                try:
+                    collector.record_snapshots(candidates)
+                except Exception as e:
+                    log.warning("Failed to record snapshots: %s", e)
 
             # ── Phase 1: Evaluate exits on open positions ────────────────
             exited = 0
