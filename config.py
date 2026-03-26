@@ -44,11 +44,16 @@ DEFAULT_MAX_TOTAL_EXPOSURE     = 500.0
 MIN_ORDER_SIZE       = 1
 DEFAULT_ORDER_SIZE   = 5
 MAX_POSITION_PER_MARKET = 50
+MAX_KELLY_FRACTION   = 0.25    # quarter-Kelly cap on position sizing
+
+# Exit management
+TRAILING_STOP_PCT    = 0.50    # exit if mark-to-market loss exceeds 50% of entry cost
+PROFIT_TAKE_PCT      = 0.50    # take profit when 50%+ of remaining edge captured
 
 # Scan
 DEFAULT_SCAN_INTERVAL = 30
 DEFAULT_MIN_VOLUME    = 0
-DEFAULT_MAX_SPREAD    = 0.40
+DEFAULT_MAX_SPREAD    = 0.15
 
 
 # ─── BotConfig ───────────────────────────────────────────────────────────────
