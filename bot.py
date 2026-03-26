@@ -243,6 +243,8 @@ def run(cfg: BotConfig):
         sys.exit(1)
 
     daily_pnl = 0.0
+    day_start_portfolio = None
+    last_reset_day = datetime.datetime.now(datetime.timezone.utc).date()
     iteration = 0
 
     while _running:
@@ -263,10 +265,28 @@ def run(cfg: BotConfig):
                 available    = float(balance_data.get("balance", 0)) / 100
                 portfolio    = float(balance_data.get("portfolio_value", available * 100)) / 100
 
+                # Midnight UTC reset
+                today = datetime.datetime.now(datetime.timezone.utc).date()
+                if today != last_reset_day:
+                    log.info("New day — resetting daily counters")
+                    risk.reset_daily()
+                    day_start_portfolio = portfolio
+                    last_reset_day = today
+                    metrics.push_log("Daily reset")
+
+                # Snapshot start-of-day portfolio on first loop
+                if day_start_portfolio is None:
+                    day_start_portfolio = portfolio
+                    log.info("Day start portfolio: $%.2f", day_start_portfolio)
+
+                daily_pnl = portfolio - day_start_portfolio
+
             risk.sync_positions(positions)
+            risk.sync_daily_pnl(daily_pnl)
             metrics.push_balance(available=available, portfolio=portfolio, daily_pnl=daily_pnl)
             metrics.push_positions(positions)
-            log.info("Balance: $%.2f | %d open positions", available, len(risk._open_tickers))
+            log.info("Balance: $%.2f | P&L: $%+.2f | %d open positions",
+                     available, daily_pnl, len(risk._open_tickers))
 
             if SIMULATE:
                 raw_markets = generate_fake_markets()
