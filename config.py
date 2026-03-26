@@ -87,7 +87,7 @@ class BotConfig:
 def load_from_env() -> BotConfig:
     """Build a BotConfig from environment variables with sensible defaults."""
     return BotConfig(
-        api_key=os.environ.get("KALSHI_API_KEY", ""),
+        api_key=os.environ.get("KALSHI_API_KEY", "").strip(),
         private_key_path=os.environ.get("KALSHI_KEY_PATH", "kalshi_key.pem"),
         demo=os.environ.get("KALSHI_DEMO", "true").lower() == "true",
         dry_run=os.environ.get("KALSHI_DRY_RUN", "true").lower() == "true",
