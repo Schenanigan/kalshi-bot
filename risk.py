@@ -58,6 +58,15 @@ class RiskManager:
             len(self._open_tickers),
         )
 
+    def sync_daily_pnl(self, pnl: float):
+        """Set daily loss from portfolio-level P&L (negative = loss)."""
+        self._daily_loss = abs(pnl) if pnl < 0 else 0.0
+        if self._daily_loss > self.cfg.max_daily_loss_dollars * 0.8:
+            log.warning(
+                "Daily loss $%.2f approaching limit $%.2f",
+                self._daily_loss, self.cfg.max_daily_loss_dollars,
+            )
+
     def approve(self, intent: OrderIntent, is_exit: bool = False) -> Optional[str]:
         """
         Check whether an order should be placed.
@@ -89,10 +98,6 @@ class RiskManager:
         # Approved
         self._traded_tickers.add(ticker)
         return None
-
-    def record_loss(self, amount: float):
-        """Record a realized loss to track daily P&L."""
-        self._daily_loss += amount
 
     def reset_daily(self):
         """Reset daily counters (call at start of each day)."""

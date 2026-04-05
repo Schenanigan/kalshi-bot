@@ -8,8 +8,10 @@ Bot.py imports: BaseStrategy, FairValueStrategy, ExpiryMomentumStrategy, OrderIn
 
 import logging
 import re
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 from math import erf, sqrt
 from typing import Optional
 
@@ -74,6 +76,34 @@ TICKER_CITY_MAP: dict[str, str] = {
     "AUS": "Austin",
 }
 
+# ── ICAO airport codes for METAR observation data ─────────────────────────
+
+CITY_ICAO: dict[str, str] = {
+    "San Francisco": "KSFO",
+    "New York":      "KJFK",
+    "Chicago":       "KORD",
+    "Los Angeles":   "KLAX",
+    "Seattle":       "KSEA",
+    "Miami":         "KMIA",
+    "Denver":        "KDEN",
+    "Houston":       "KIAH",
+    "Phoenix":       "KPHX",
+    "Philadelphia":  "KPHL",
+    "Dallas":        "KDFW",
+    "Atlanta":       "KATL",
+    "Boston":        "KBOS",
+    "Detroit":       "KDTW",
+    "Minneapolis":   "KMSP",
+    "Las Vegas":     "KLAS",
+    "Portland":      "KPDX",
+    "Charlotte":     "KCLT",
+    "Nashville":     "KBNA",
+    "Austin":        "KAUS",
+}
+
+METAR_API = "https://aviationweather.gov/api/data/metar"
+METAR_CACHE_SECONDS = 900  # 15 min — METARs update hourly
+
 
 # ── OrderIntent ───────────────────────────────────────────────────────────────
 
@@ -112,16 +142,17 @@ class BaseStrategy(ABC):
         return None
 
 
-# ── FairValueStrategy (weather / obscure markets) ────────────────────────────
+# ── FairValueStrategy (weather markets) ───────────────────────────────────────
 
 class FairValueStrategy(BaseStrategy):
     """
-    For weather and obscure markets: compare an external fair value estimate
-    against the market price. If the market is mispriced by more than the
-    edge threshold, trade into it.
+    For weather markets: compare an external fair value estimate against the
+    market price. If the market is mispriced by more than the edge threshold,
+    trade into it.
 
-    For weather markets, uses NWS forecast data (resolved dynamically per city).
-    For other markets, fades prices far from 50c (mean-reversion heuristic).
+    Data hierarchy:
+      1. METAR (aviation weather observations) — actual readings, tightest edge
+      2. NWS forecast — used as fallback when METAR is insufficient
     """
     name = "fair_value"
 
@@ -129,7 +160,8 @@ class FairValueStrategy(BaseStrategy):
 
     def __init__(self):
         self._forecast_cache: dict[str, dict] = {}
-        self._grid_cache: dict[str, tuple[str, int, int]] = {}  # city -> (office, gridX, gridY)
+        self._grid_cache: dict[str, tuple[str, int, int]] = {}
+        self._metar_cache: dict[str, dict] = {}
 
     def evaluate(self, market: CandidateMarket, orderbook: dict) -> Optional[OrderIntent]:
         if "weather" in market.tags:
@@ -143,38 +175,40 @@ class FairValueStrategy(BaseStrategy):
             return None
 
         series = market.series.upper()
-        nws_prob = None
+        fair_prob = None
+        source = ""
         if series.startswith("KXHIGH") or series.startswith("KXLOW"):
-            nws_prob = self._get_temp_probability(market)
+            fair_prob, source = self._get_temp_probability(market)
         elif series.startswith("KXRAIN"):
-            nws_prob = self._get_rain_probability(market)
+            fair_prob, source = self._get_rain_probability(market)
+        elif series.startswith("KXWIND"):
+            fair_prob, source = self._get_wind_probability(market)
+        elif series.startswith("KXSNOW"):
+            fair_prob, source = self._get_snow_probability(market)
 
-        if nws_prob is None:
+        if fair_prob is None:
             return None
 
         entry_price_frac = position.entry_price / 100
-        mid = market.mid
 
         if position.side == "yes":
-            # We're long YES. Exit if fair value dropped below entry.
-            if nws_prob < entry_price_frac:
+            if fair_prob < entry_price_frac:
                 sell_price = max(int(market.yes_bid * 100), 1)
                 return OrderIntent(
                     ticker=position.ticker, side="yes",
                     count=position.count, limit_price=sell_price,
-                    reason=f"EXIT: NWS {nws_prob:.0%} flipped below entry {entry_price_frac:.0%}",
+                    reason=f"EXIT {source}: {fair_prob:.0%} below entry {entry_price_frac:.0%}",
                     action="sell",
                 )
         else:
-            # We're long NO. NO fair value = 1 - nws_prob.
-            no_fair = 1.0 - nws_prob
+            no_fair = 1.0 - fair_prob
             if no_fair < entry_price_frac:
                 no_bid = 1.0 - market.yes_ask
                 sell_price = max(int(no_bid * 100), 1)
                 return OrderIntent(
                     ticker=position.ticker, side="no",
                     count=position.count, limit_price=sell_price,
-                    reason=f"EXIT: NWS flipped, NO fair {no_fair:.0%} below entry {entry_price_frac:.0%}",
+                    reason=f"EXIT {source}: NO fair {no_fair:.0%} below entry {entry_price_frac:.0%}",
                     action="sell",
                 )
 
@@ -186,39 +220,37 @@ class FairValueStrategy(BaseStrategy):
         return None
 
     def _evaluate_weather(self, market: CandidateMarket) -> Optional[OrderIntent]:
-        """Compare NWS forecast against Kalshi implied probability.
+        """Compare METAR/NWS fair value against Kalshi implied probability.
 
-        For KXHIGH/KXLOW/KXRAIN: attempts NWS forecast lookup, falls back to
-        mean-reversion if the lookup fails.
-        For KXSNOW/KXWIND: uses mean-reversion directly (no NWS signal).
+        Tries METAR observations first (actual readings), falls back to NWS
+        forecasts. Covers KXHIGH, KXLOW, KXRAIN, KXWIND, KXSNOW.
         """
         series = market.series.upper()
 
-        nws_prob = None
+        fair_prob = None
+        source = ""
         if series.startswith("KXHIGH") or series.startswith("KXLOW"):
-            nws_prob = self._get_temp_probability(market)
+            fair_prob, source = self._get_temp_probability(market)
         elif series.startswith("KXRAIN"):
-            nws_prob = self._get_rain_probability(market)
-        elif series.startswith("KXSNOW") or series.startswith("KXWIND"):
-            # No reliable NWS signal — use mean-reversion
-            log.debug("%s — no NWS signal for %s, using mean-reversion", market.ticker, series)
-            return self._evaluate_mean_reversion(market)
+            fair_prob, source = self._get_rain_probability(market)
+        elif series.startswith("KXWIND"):
+            fair_prob, source = self._get_wind_probability(market)
+        elif series.startswith("KXSNOW"):
+            fair_prob, source = self._get_snow_probability(market)
         else:
-            return self._evaluate_mean_reversion(market)
+            return None
 
-        if nws_prob is None:
-            # NWS lookup failed — fall back to mean-reversion instead of skipping
-            log.info("%s — NWS lookup failed, falling back to mean-reversion", market.ticker)
-            return self._evaluate_mean_reversion(market)
+        if fair_prob is None:
+            log.info("%s — no signal from METAR or NWS", market.ticker)
+            return None
 
         mid = market.mid
-        edge = nws_prob - mid
+        edge = fair_prob - mid
 
         if abs(edge) < config.WEATHER_EDGE_THRESHOLD:
             log.debug("%s — weather edge %.1f¢ below threshold", market.ticker, abs(edge) * 100)
             return None
 
-        # Concave sizing: sqrt scaling dampens extreme signals
         base = config.DEFAULT_ORDER_SIZE
         size = max(config.MIN_ORDER_SIZE, min(
             int(base * sqrt(abs(edge) / config.WEATHER_EDGE_THRESHOLD)),
@@ -231,7 +263,7 @@ class FairValueStrategy(BaseStrategy):
                 ticker=market.ticker, side="yes",
                 count=size,
                 limit_price=price_cents,
-                reason=f"Weather: NWS {nws_prob:.0%} vs market {mid:.0%} (edge {abs(edge):.1%})",
+                reason=f"Weather {source}: P={fair_prob:.0%} vs mkt {mid:.0%} (edge {abs(edge):.1%})",
             )
         else:
             no_ask = 1.0 - market.yes_bid
@@ -240,7 +272,7 @@ class FairValueStrategy(BaseStrategy):
                 ticker=market.ticker, side="no",
                 count=size,
                 limit_price=price_cents,
-                reason=f"Weather: NWS {nws_prob:.0%} vs market {mid:.0%} (fade YES, edge {abs(edge):.1%})",
+                reason=f"Weather {source}: P={fair_prob:.0%} vs mkt {mid:.0%} (fade YES, edge {abs(edge):.1%})",
             )
 
     # ── NWS helpers ──────────────────────────────────────────────────────────
@@ -318,34 +350,152 @@ class FairValueStrategy(BaseStrategy):
             log.error("NWS forecast fetch failed for %s: %s", city, e)
             return None
 
-    def _get_temp_probability(self, market: CandidateMarket) -> Optional[float]:
-        forecast = self._get_forecast(market)
-        if not forecast:
+    # ── METAR helpers ─────────────────────────────────────────────────────────
+
+    def _get_metar(self, city: str) -> Optional[dict]:
+        """Fetch latest METAR observation for a city's airport."""
+        icao = CITY_ICAO.get(city)
+        if not icao:
             return None
 
+        now = time.time()
+        cached = self._metar_cache.get(icao)
+        if cached and (now - cached["_fetched_at"]) < METAR_CACHE_SECONDS:
+            return cached
+
+        try:
+            resp = requests.get(
+                METAR_API,
+                params={"ids": icao, "format": "json"},
+                timeout=10,
+                headers={"User-Agent": "kalshi-bot/1.0"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not data or not isinstance(data, list):
+                log.warning("METAR empty response for %s", icao)
+                return None
+            metar = data[0]
+            metar["_fetched_at"] = now
+            self._metar_cache[icao] = metar
+            temp_f = metar.get("temp", 0) * 9 / 5 + 32
+            log.info(
+                "METAR %s: %.1f°F (%.1f°C) wind %skt wx=%s",
+                icao, temp_f, metar.get("temp", 0),
+                metar.get("wspd", 0),
+                metar.get("wxString", "clear"),
+            )
+            return metar
+        except Exception as e:
+            log.warning("METAR fetch failed for %s: %s", icao, e)
+            return None
+
+    # ── Probability helpers ───────────────────────────────────────────────────
+
+    def _get_temp_probability(
+        self, market: CandidateMarket,
+    ) -> tuple[Optional[float], str]:
+        """P(actual temp exceeds threshold). Tries METAR first, NWS fallback.
+
+        For KXHIGH: if observed temp already >= threshold → P=0.99 (settled).
+        For KXLOW:  if observed temp already <= threshold → P=0.01 (settled).
+        Otherwise uses normal CDF with time-based uncertainty (METAR: ±1-3°F,
+        NWS: ±3°F).
+        """
         threshold = self._extract_temp_threshold(market.title)
         if threshold is None:
-            return None
+            return None, ""
 
-        nws_temp = self._extract_nws_temp(forecast, market.close_time, is_high=market.series.upper().startswith("KXHIGH"))
-        if nws_temp is None:
-            return None
+        is_high = market.series.upper().startswith("KXHIGH")
+        city = self._resolve_city(market)
 
-        # P(actual > threshold) using normal CDF with +/-3F uncertainty
-        z = (nws_temp - threshold) / (3.0 * sqrt(2))
-        return 0.5 * (1 + erf(z))
+        # --- METAR: actual observation, tightest uncertainty ---
+        if city:
+            metar = self._get_metar(city)
+            if metar and metar.get("temp") is not None:
+                temp_c = metar["temp"]
+                temp_f = temp_c * 9 / 5 + 32
+                hours_left = market.minutes_to_close / 60
 
-    def _get_rain_probability(self, market: CandidateMarket) -> Optional[float]:
+                if is_high:
+                    max_c = metar.get("maxT")
+                    max_f = (
+                        max_c * 9 / 5 + 32
+                        if max_c is not None else temp_f
+                    )
+                    observed_high = max(temp_f, max_f)
+                    if observed_high >= threshold:
+                        log.info(
+                            "%s — METAR: high %.1f°F ≥ %.0f°F → P=99%%",
+                            market.ticker, observed_high, threshold,
+                        )
+                        return 0.99, "METAR"
+                else:
+                    min_c = metar.get("minT")
+                    min_f = (
+                        min_c * 9 / 5 + 32
+                        if min_c is not None else temp_f
+                    )
+                    observed_low = min(temp_f, min_f)
+                    if observed_low <= threshold:
+                        log.info(
+                            "%s — METAR: low %.1f°F ≤ %.0f°F → P=1%%",
+                            market.ticker, observed_low, threshold,
+                        )
+                        return 0.01, "METAR"
+
+                # Not yet settled — METAR temp + time-based sigma
+                sigma = max(1.0, min(hours_left * 0.5, 3.0))
+                z = (temp_f - threshold) / (sigma * sqrt(2))
+                prob = 0.5 * (1 + erf(z))
+                log.info(
+                    "%s — METAR: %.1f°F vs %.0f°F σ=%.1f P=%.0f%%",
+                    market.ticker, temp_f, threshold, sigma,
+                    prob * 100,
+                )
+                return prob, "METAR"
+
+        # --- NWS forecast fallback ---
         forecast = self._get_forecast(market)
         if not forecast:
-            return None
+            return None, ""
+
+        nws_temp = self._extract_nws_temp(
+            forecast, market.close_time, is_high=is_high,
+        )
+        if nws_temp is None:
+            return None, ""
+
+        z = (nws_temp - threshold) / (3.0 * sqrt(2))
+        return 0.5 * (1 + erf(z)), "NWS"
+
+    def _get_rain_probability(
+        self, market: CandidateMarket,
+    ) -> tuple[Optional[float], str]:
+        """P(rain today). Checks METAR for active precip first."""
+        city = self._resolve_city(market)
+        if city:
+            metar = self._get_metar(city)
+            if metar:
+                wx = (metar.get("wxString") or "").upper()
+                precip_codes = ("RA", "DZ", "SH", "TS", "UP")
+                if any(code in wx for code in precip_codes):
+                    log.info(
+                        "%s — METAR precip active: %s",
+                        market.ticker, wx,
+                    )
+                    return 0.97, "METAR"
+
+        # NWS PoP fallback
+        forecast = self._get_forecast(market)
+        if not forecast:
+            return None, ""
 
         periods = forecast.get("properties", {}).get("periods", [])
         target_day = market.close_time.date()
         for period in periods:
             start = period.get("startTime", "")
             try:
-                from datetime import datetime
                 period_date = datetime.fromisoformat(start).date()
             except ValueError:
                 continue
@@ -353,8 +503,8 @@ class FairValueStrategy(BaseStrategy):
                 pop = period.get("probabilityOfPrecipitation", {})
                 val = pop.get("value") if isinstance(pop, dict) else pop
                 if val is not None:
-                    return float(val) / 100  # convert % to 0-1
-        return None
+                    return float(val) / 100, "NWS"
+        return None, ""
 
     def _extract_nws_temp(self, forecast: dict, target_date, is_high: bool) -> Optional[float]:
         periods = forecast.get("properties", {}).get("periods", [])
@@ -362,7 +512,6 @@ class FairValueStrategy(BaseStrategy):
         for period in periods:
             start = period.get("startTime", "")
             try:
-                from datetime import datetime
                 period_date = datetime.fromisoformat(start).date()
             except ValueError:
                 continue
@@ -380,6 +529,88 @@ class FairValueStrategy(BaseStrategy):
         if match:
             return float(match.group(1))
         return None
+
+    @staticmethod
+    def _extract_wind_threshold(title: str) -> Optional[float]:
+        """Extract mph threshold from market title."""
+        match = re.search(
+            r"(\d+(?:\.\d+)?)\s*mph", title, re.IGNORECASE,
+        )
+        if match:
+            return float(match.group(1))
+        return None
+
+    def _get_wind_probability(
+        self, market: CandidateMarket,
+    ) -> tuple[Optional[float], str]:
+        """P(wind exceeds threshold). Uses METAR wind observations."""
+        city = self._resolve_city(market)
+        if not city:
+            return None, ""
+
+        metar = self._get_metar(city)
+        if not metar:
+            return None, ""
+
+        wspd_kt = metar.get("wspd", 0) or 0
+        wgst_kt = metar.get("wgst") or 0
+        max_wind_mph = max(wspd_kt, wgst_kt) * 1.15078
+
+        threshold = self._extract_wind_threshold(market.title)
+        if threshold is None:
+            return None, ""
+
+        if max_wind_mph >= threshold:
+            log.info(
+                "%s — METAR: wind %.0f mph ≥ %.0f mph → P=97%%",
+                market.ticker, max_wind_mph, threshold,
+            )
+            return 0.97, "METAR"
+
+        hours_left = market.minutes_to_close / 60
+        sigma = max(2.0, min(hours_left * 1.0, 5.0))
+        z = (max_wind_mph - threshold) / (sigma * sqrt(2))
+        prob = 0.5 * (1 + erf(z))
+        log.info(
+            "%s — METAR: wind %.0f mph vs %.0f σ=%.1f P=%.0f%%",
+            market.ticker, max_wind_mph, threshold, sigma,
+            prob * 100,
+        )
+        return prob, "METAR"
+
+    def _get_snow_probability(
+        self, market: CandidateMarket,
+    ) -> tuple[Optional[float], str]:
+        """P(snow today). Checks METAR for active snowfall and temp."""
+        city = self._resolve_city(market)
+        if not city:
+            return None, ""
+
+        metar = self._get_metar(city)
+        if not metar:
+            return None, ""
+
+        wx = (metar.get("wxString") or "").upper()
+        snow_codes = ("SN", "GS", "PL", "IC")
+        if any(code in wx for code in snow_codes):
+            log.info(
+                "%s — METAR snow/ice active: %s",
+                market.ticker, wx,
+            )
+            return 0.95, "METAR"
+
+        # Above freezing and no snow → very unlikely near close
+        temp_c = metar.get("temp")
+        if temp_c is not None and temp_c > 3.0:
+            hours_left = market.minutes_to_close / 60
+            if hours_left < 6:
+                log.info(
+                    "%s — METAR: %.1f°C (>37°F) no snow, P=5%%",
+                    market.ticker, temp_c,
+                )
+                return 0.05, "METAR"
+
+        return None, ""
 
 
 # ── ExpiryMomentumStrategy (markets about to close) ─────────────────────────
@@ -472,10 +703,9 @@ class ExpiryMomentumStrategy(BaseStrategy):
             return None
 
         entry_frac = position.entry_price / 100
-        mid = market.mid
 
         if position.side == "yes":
-            mark = market.yes_bid  # what we could sell for
+            mark = market.yes_bid
             pnl_pct = (mark - entry_frac) / entry_frac if entry_frac > 0 else 0
         else:
             no_bid = 1.0 - market.yes_ask
