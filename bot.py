@@ -21,12 +21,14 @@ import logging
 import sys
 import datetime
 
+import config
 from config import BotConfig, load_from_env
 from client import KalshiClient
 from scanner import scan
 from strategy import FairValueStrategy, ExpiryMomentumStrategy, BaseStrategy, OrderIntent, PositionInfo
 from risk import RiskManager, RiskConfig
 from metrics import MetricsServer
+from paper import PaperTrader
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 _log_handlers = [logging.StreamHandler(sys.stdout)]
@@ -124,6 +126,7 @@ def generate_fake_markets() -> list[dict]:
 
 
 SIMULATE = "--simulate" in sys.argv
+PAPER    = "--paper" in sys.argv
 
 
 # ── Strategy factory ──────────────────────────────────────────────────────────
@@ -153,6 +156,8 @@ def execute(
     dry_run: bool,
     metrics: MetricsServer,
     strategy_name: str,
+    placed_order_ids: set | None = None,
+    paper: PaperTrader | None = None,
 ) -> bool:
     rejection = risk.approve(intent)
     if rejection:
@@ -166,6 +171,17 @@ def execute(
         return False
 
     trade_cost = (intent.limit_price / 100) * intent.count
+
+    if paper is not None:
+        ok = paper.submit_order(intent, strategy_name)
+        if ok:
+            metrics.push_order(
+                ticker=intent.ticker, side=intent.side, count=intent.count,
+                price_cents=intent.limit_price, status="paper",
+                reason=intent.reason, strategy=strategy_name,
+            )
+        return ok
+
     label = "DRY" if dry_run else "LIVE"
     log.info(
         "[%s] %s %s×%d @ %dc (~$%.2f) | %s",
@@ -192,6 +208,8 @@ def execute(
         )
         order_id = result.get("order", {}).get("order_id", "?")
         log.info("Order placed: %s", order_id)
+        if placed_order_ids is not None and order_id != "?":
+            placed_order_ids.add(order_id)
         metrics.push_order(
             ticker=intent.ticker, side=intent.side, count=intent.count,
             price_cents=intent.limit_price, status="placed",
@@ -205,12 +223,102 @@ def execute(
         return False
 
 
+# ── Resting order management ─────────────────────────────────────────────────
+
+def manage_resting_orders(
+    client: KalshiClient,
+    candidates: list,
+    placed_ids: set,
+    metrics: MetricsServer,
+) -> tuple[int, int, int]:
+    """Check resting orders: cancel stale ones, detect fills.
+
+    Only called in live (non-dry-run, non-simulate) mode.
+    Returns (resting_count, cancelled_count, filled_count).
+    """
+    try:
+        resting = client.get_orders(status="resting")
+    except Exception as e:
+        log.warning("Failed to fetch resting orders: %s", e)
+        return 0, 0, 0
+
+    resting_ids = {o.get("order_id", "") for o in resting}
+
+    # Detect fills: orders we placed that are no longer resting
+    newly_filled = placed_ids - resting_ids
+    filled_count = len(newly_filled)
+    for oid in newly_filled:
+        log.info("Order %s filled or settled", oid)
+        metrics.push_log(f"FILLED order {oid}")
+    placed_ids -= newly_filled
+
+    # Cancel stale resting orders (price drifted too far from limit)
+    candidate_prices = {c.ticker: c for c in candidates}
+    cancelled = 0
+
+    for order in resting:
+        ticker = order.get("ticker", "")
+        order_id = order.get("order_id", "")
+        side = order.get("side", "")
+
+        if side == "yes":
+            limit_cents = order.get("yes_price", 0)
+        else:
+            limit_cents = order.get("no_price", 0)
+
+        if ticker not in candidate_prices:
+            continue  # can't assess drift without current prices
+
+        market = candidate_prices[ticker]
+        yes_mid_cents = int(market.mid * 100)
+        if side == "yes":
+            drift = abs(limit_cents - yes_mid_cents)
+        else:
+            drift = abs(limit_cents - (100 - yes_mid_cents))
+
+        if drift <= config.STALE_PRICE_DRIFT_CENTS:
+            continue
+
+        log.info(
+            "Cancelling stale order %s on %s: limit=%dc, drift=%dc",
+            order_id, ticker, limit_cents, drift,
+        )
+        try:
+            client.cancel_order(order_id)
+        except Exception as e:
+            log.warning("Cancel failed for %s: %s", order_id, e)
+            continue
+        cancelled += 1
+        placed_ids.discard(order_id)
+        metrics.push_order(
+            ticker=ticker, side=side,
+            count=order.get("remaining_count", 0),
+            price_cents=limit_cents, status="cancelled_stale",
+            reason=f"price drift {drift}c", strategy="order_mgmt",
+        )
+
+    metrics.push_order_lifecycle(
+        resting=len(resting) - cancelled,
+        new_fills=filled_count,
+        new_cancels=cancelled,
+    )
+
+    if resting or filled_count:
+        log.info(
+            "Orders: %d resting, %d stale cancelled, %d filled",
+            len(resting) - cancelled, cancelled, filled_count,
+        )
+
+    return len(resting), cancelled, filled_count
+
+
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def run(cfg: BotConfig):
     log.info("=" * 60)
     log.info("Kalshi Bot starting")
-    log.info("  Mode      : %s", "SIMULATE" if SIMULATE else ("DEMO" if cfg.demo else "PRODUCTION"))
+    mode = "SIMULATE" if SIMULATE else "PAPER" if PAPER else "DEMO" if cfg.demo else "PRODUCTION"
+    log.info("  Mode      : %s", mode)
     log.info("  Dry run   : %s", cfg.dry_run)
     log.info("  Strategies: %s", cfg.active_strategies)
     log.info("  Interval  : %ds", cfg.scan_interval_seconds)
@@ -230,6 +338,7 @@ def run(cfg: BotConfig):
     metrics.push_log("Bot started")
 
     client    = KalshiClient(cfg.api_key or "simulate", cfg.private_key_path, demo=cfg.demo) if not SIMULATE else None
+    paper     = PaperTrader(config.PAPER_STARTING_BALANCE) if PAPER else None
     risk      = RiskManager(RiskConfig(
         max_trade_dollars      = cfg.max_trade_dollars,
         max_open_positions     = cfg.max_open_positions,
@@ -245,6 +354,8 @@ def run(cfg: BotConfig):
     daily_pnl = 0.0
     day_start_portfolio = None
     last_reset_day = datetime.datetime.now(datetime.timezone.utc).date()
+    placed_order_ids: set[str] = set()
+    prev_candidates: list = []
     iteration = 0
 
     while _running:
@@ -259,6 +370,24 @@ def run(cfg: BotConfig):
                 available = 500.00 + random.uniform(-20, 20)
                 portfolio = available + random.uniform(0, 100)
                 daily_pnl = random.uniform(-15, 30)
+            elif PAPER:
+                positions = paper.get_positions_as_dicts()
+                available = paper.balance
+                portfolio = paper.get_portfolio_value(prev_candidates)
+
+                today = datetime.datetime.now(datetime.timezone.utc).date()
+                if today != last_reset_day:
+                    log.info("New day — resetting daily counters")
+                    risk.reset_daily()
+                    day_start_portfolio = portfolio
+                    last_reset_day = today
+                    metrics.push_log("Daily reset")
+
+                if day_start_portfolio is None:
+                    day_start_portfolio = portfolio
+                    log.info("Paper start portfolio: $%.2f", day_start_portfolio)
+
+                daily_pnl = portfolio - day_start_portfolio
             else:
                 positions    = client.get_positions()
                 balance_data = client.get_balance()
@@ -304,10 +433,9 @@ def run(cfg: BotConfig):
                     time.sleep(0.3)
 
                 if cfg.include_weather:
-                    from config import WEATHER_SERIES_PREFIXES
                     # Only fetch weather markets expiring within 48 hours
                     weather_max_close = now_ts + (48 * 60 * 60)
-                    for prefix in WEATHER_SERIES_PREFIXES:
+                    for prefix in config.WEATHER_SERIES_PREFIXES:
                         weather = client.get_markets(
                             series=prefix, limit=200, paginate=False,
                             min_close_ts=now_ts, max_close_ts=weather_max_close,
@@ -344,6 +472,24 @@ def run(cfg: BotConfig):
             )
             log.info("%d candidates from %d markets", len(candidates), len(raw_markets))
 
+            # ── Manage resting / paper orders ─────────────────────────
+            if PAPER:
+                fills = paper.check_fills(candidates)
+                for f in fills:
+                    metrics.push_order(
+                        ticker=f.ticker, side=f.side, count=f.count,
+                        price_cents=f.limit_price, status="paper_filled",
+                        reason=f.reason, strategy=f.strategy,
+                    )
+                    metrics.push_log(f"PAPER FILL {f.ticker} {f.side.upper()} ×{f.count} @ {f.limit_price}¢")
+                if fills:
+                    log.info("Paper: %d orders filled, %d pending", len(fills), len(paper.pending))
+                prev_candidates = candidates
+            elif not SIMULATE and not cfg.dry_run:
+                manage_resting_orders(
+                    client, candidates, placed_order_ids, metrics,
+                )
+
             # ── Phase 1: Evaluate exits on open positions ────────────────
             exited = 0
             if positions and not SIMULATE:
@@ -379,26 +525,31 @@ def run(cfg: BotConfig):
                         if rejection:
                             log.warning("EXIT RISK BLOCK %s — %s", ticker, rejection)
                             break
-                        label = "DRY" if cfg.dry_run else "LIVE"
+                        label = "PAPER" if PAPER else "DRY" if cfg.dry_run else "LIVE"
                         log.info(
                             "[%s EXIT] %s %s×%d @ %dc | %s",
                             label, exit_intent.ticker, exit_intent.side.upper(),
                             exit_intent.count, exit_intent.limit_price, exit_intent.reason,
                         )
-                        if not cfg.dry_run:
+                        if PAPER:
+                            paper.submit_order(exit_intent, f"{strat.name}_exit")
+                        elif not cfg.dry_run:
                             try:
-                                client.place_order(
+                                result = client.place_order(
                                     ticker=exit_intent.ticker, side=exit_intent.side,
                                     count=exit_intent.count, limit_price=exit_intent.limit_price,
                                     action=exit_intent.action,
                                 )
+                                oid = result.get("order", {}).get("order_id", "?")
+                                if oid != "?":
+                                    placed_order_ids.add(oid)
                             except Exception as e:
                                 log.error("Exit order failed %s: %s", ticker, e)
                         exited += 1
                         metrics.push_order(
                             ticker=exit_intent.ticker, side=exit_intent.side,
                             count=exit_intent.count, price_cents=exit_intent.limit_price,
-                            status="dry_run" if cfg.dry_run else "placed",
+                            status="paper" if PAPER else "dry_run" if cfg.dry_run else "placed",
                             reason=exit_intent.reason, strategy=f"{strat.name}_exit",
                         )
                         metrics.push_log(f"EXIT {exit_intent.ticker} {exit_intent.reason}")
@@ -420,7 +571,7 @@ def run(cfg: BotConfig):
                     intent = strat.evaluate(market, orderbook)
                     if intent is None:
                         continue
-                    ok = execute(client, intent, risk, cfg.dry_run, metrics, strat.name)
+                    ok = execute(client, intent, risk, cfg.dry_run, metrics, strat.name, placed_order_ids, paper)
                     if ok:
                         placed += 1
                         break

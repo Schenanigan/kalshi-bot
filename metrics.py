@@ -99,6 +99,13 @@ class ScanStats:
     expiring: int        = 0
     orders_placed: int   = 0
 
+@dataclass
+class OrderLifecycle:
+    resting: int           = 0
+    placed_session: int    = 0
+    filled_session: int    = 0
+    cancelled_stale: int   = 0
+
 
 # ── Thread-safe store ─────────────────────────────────────────────────────────
 
@@ -111,6 +118,7 @@ class MetricsStore:
         self.orders:    deque[OrderRecord]   = deque(maxlen=MAX_ORDER_LINES)
         self.candidates: list[CandidateMarket] = []
         self.scan_stats = ScanStats()
+        self.order_lifecycle = OrderLifecycle()
         self.log_lines: deque[str]           = deque(maxlen=MAX_LOG_LINES)
 
     def snapshot(self) -> dict:
@@ -122,6 +130,7 @@ class MetricsStore:
                 "orders":      [asdict(o) for o in self.orders],
                 "candidates":  [asdict(c) for c in self.candidates],
                 "scan_stats":  asdict(self.scan_stats),
+                "order_lifecycle": asdict(self.order_lifecycle),
                 "log_lines":   list(self.log_lines),
             }
 
@@ -190,6 +199,15 @@ class MetricsStore:
                 price_cents=price_cents, status=status,
                 reason=reason[:80], strategy=strategy,
             ))
+            if status == "placed":
+                self.order_lifecycle.placed_session += 1
+
+    def push_order_lifecycle(self, resting: int = 0,
+                             new_fills: int = 0, new_cancels: int = 0):
+        with self._lock:
+            self.order_lifecycle.resting = resting
+            self.order_lifecycle.filled_session += new_fills
+            self.order_lifecycle.cancelled_stale += new_cancels
 
     def push_log(self, line: str):
         with self._lock:
@@ -260,4 +278,5 @@ class MetricsServer:
     def push_positions(self, *a):  self.store.push_positions(*a)
     def push_candidates(self, *a, **kw): self.store.push_candidates(*a, **kw)
     def push_order(self, **kw):    self.store.push_order(**kw)
+    def push_order_lifecycle(self, **kw): self.store.push_order_lifecycle(**kw)
     def push_log(self, line: str): self.store.push_log(line)

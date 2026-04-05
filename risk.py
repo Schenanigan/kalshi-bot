@@ -99,10 +99,6 @@ class RiskManager:
         self._traded_tickers.add(ticker)
         return None
 
-    def record_loss(self, amount: float):
-        """Record a realized loss to track daily P&L."""
-        self._daily_loss += amount
-
     def reset_daily(self):
         """Reset daily counters (call at start of each day)."""
         self._daily_loss = 0.0

@@ -38,7 +38,6 @@ DEFAULT_MAX_TRADE_DOLLARS      = 25.0
 DEFAULT_MAX_OPEN_POSITIONS     = 10
 DEFAULT_MAX_DAILY_LOSS_DOLLARS = 100.0
 DEFAULT_MAX_POSITION_PER_MARKET = 50
-DEFAULT_MAX_TOTAL_EXPOSURE     = 500.0
 
 # Order sizing
 MIN_ORDER_SIZE       = 1
@@ -48,6 +47,12 @@ MAX_KELLY_FRACTION   = 0.25    # quarter-Kelly cap on position sizing
 
 # Exit management
 TRAILING_STOP_PCT    = 0.50    # exit if mark-to-market loss exceeds 50% of entry cost
+
+# Order management
+STALE_PRICE_DRIFT_CENTS = 5   # cancel resting orders if market moves >5c from limit
+
+# Paper trading
+PAPER_STARTING_BALANCE = 500.0
 
 # Scan
 DEFAULT_SCAN_INTERVAL = 30
