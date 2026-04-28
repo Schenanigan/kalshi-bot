@@ -1,6 +1,10 @@
 *.pem
 *.key
 bot.log
+bot.log.*
+equity.csv
+paper_state.json
+paper_state.json.tmp
 __pycache__/
 *.pyc
 .env
