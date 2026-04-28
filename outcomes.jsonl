@@ -1,0 +1,2 @@
+{"ticker": "KXHIGHNY-26APR26", "side": "basket", "count": 14, "entry_price": 78, "pnl": 2.9400000000000013, "outcome": "arb_settled", "ts": "2026-04-27T05:00:18.660227+00:00"}
+{"ticker": "KXHIGHTSATX-26APR26", "side": "basket", "count": 15, "entry_price": 73, "pnl": -10.95, "outcome": "arb_settled_uncovered", "ts": "2026-04-27T06:00:52.000203+00:00"}

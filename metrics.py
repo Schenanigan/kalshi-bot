@@ -37,6 +37,29 @@ log = logging.getLogger(__name__)
 PORT = 8765
 MAX_LOG_LINES   = 200
 MAX_ORDER_LINES = 100
+MAX_PNL_HISTORY = 500
+MAX_FILL_HISTORY = 200
+
+# Edge-bucket boundaries (cents) for the per-edge realized dashboard.
+# Anything below the partition-arb MIN_EDGE (8c today) lands in "<8c" — that
+# bucket should stay empty in normal operation; if it fills it indicates
+# either a config regression or a cert-winner being mistakenly tagged.
+EDGE_BUCKETS: list[tuple[float, float, str]] = [
+    (0.0, 8.0, "<8c"),
+    (8.0, 10.0, "8-10c"),
+    (10.0, 15.0, "10-15c"),
+    (15.0, 25.0, "15-25c"),
+    (25.0, 50.0, "25-50c"),
+    (50.0, 1e9, "50c+"),
+]
+EDGE_BUCKET_LABELS = [label for _, _, label in EDGE_BUCKETS]
+
+
+def _edge_bucket_for(edge_cents: float) -> str:
+    for lo, hi, label in EDGE_BUCKETS:
+        if lo <= edge_cents < hi:
+            return label
+    return EDGE_BUCKETS[-1][2]
 
 
 # ── Data models ───────────────────────────────────────────────────────────────
@@ -99,6 +122,37 @@ class ScanStats:
     expiring: int        = 0
     orders_placed: int   = 0
 
+@dataclass
+class OrderLifecycle:
+    resting: int           = 0
+    placed_session: int    = 0
+    filled_session: int    = 0
+    cancelled_stale: int   = 0
+
+
+@dataclass
+class PnlSnapshot:
+    ts: str
+    balance: float
+    portfolio: float
+    daily_pnl: float
+    realized_pnl: float
+    unrealized_pnl: float
+    open_positions: int
+    pending_orders: int
+
+
+@dataclass
+class FillRecord:
+    ts: str
+    ticker: str
+    side: str
+    action: str
+    count: int
+    price_cents: int
+    strategy: str
+    reason: str
+
 
 # ── Thread-safe store ─────────────────────────────────────────────────────────
 
@@ -111,7 +165,47 @@ class MetricsStore:
         self.orders:    deque[OrderRecord]   = deque(maxlen=MAX_ORDER_LINES)
         self.candidates: list[CandidateMarket] = []
         self.scan_stats = ScanStats()
+        self.order_lifecycle = OrderLifecycle()
         self.log_lines: deque[str]           = deque(maxlen=MAX_LOG_LINES)
+        # Paper-trading specifics
+        self.pnl_history: deque[PnlSnapshot]  = deque(maxlen=MAX_PNL_HISTORY)
+        self.fill_history: deque[FillRecord]   = deque(maxlen=MAX_FILL_HISTORY)
+        self.paper_stats: dict = {
+            "starting_balance": 0.0,
+            "realized_pnl": 0.0,
+            "unrealized_pnl": 0.0,
+            "total_submitted": 0,
+            "total_fills": 0,
+            "total_fees": 0.0,
+            "pending_orders": 0,
+        }
+        # Per-strategy counters so we can tell which strategies are earning
+        # vs. bleeding. Keys: strategy_name → {submitted, filled, blocked,
+        # notional_dollars, last_edge}. Written by push_order / push_fill.
+        self.strategy_stats: dict = {}
+        # Partition-arb basket-level stats, tracked separately because a
+        # single basket decomposes into N order records in `orders`.
+        self.basket_stats: dict = {
+            "attempted": 0,       # baskets where _find_partition_arb fired
+            "submitted": 0,       # baskets where every leg reached place_order
+            "edge_sum_cents": 0.0,  # running total of basket edges (for avg)
+            "last_edge_cents": 0.0,
+        }
+        # Certain-winner strategy stats (single-leg monotonic arbs).
+        self.cert_winner_stats: dict = {
+            "attempted": 0,
+            "submitted": 0,
+            "edge_sum_cents": 0.0,
+        }
+        # Per-edge realized P&L: for each edge bucket (at fire time),
+        # how many baskets settled, how many won (pnl > 0), and the
+        # cumulative realized P&L. Tells us whether the MIN_EDGE gate
+        # is actually +EV at low edges, or if thin-edge baskets are
+        # losing on uncovered-bucket adverse selection.
+        self.edge_realized: dict[str, dict] = {
+            label: {"baskets": 0, "wins": 0, "pnl_dollars": 0.0}
+            for label in EDGE_BUCKET_LABELS
+        }
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -122,11 +216,19 @@ class MetricsStore:
                 "orders":      [asdict(o) for o in self.orders],
                 "candidates":  [asdict(c) for c in self.candidates],
                 "scan_stats":  asdict(self.scan_stats),
+                "order_lifecycle": asdict(self.order_lifecycle),
                 "log_lines":   list(self.log_lines),
+                "pnl_history": [asdict(s) for s in self.pnl_history],
+                "fill_history": [asdict(f) for f in self.fill_history],
+                "paper_stats": dict(self.paper_stats),
+                "strategy_stats": dict(self.strategy_stats),
+                "basket_stats": dict(self.basket_stats),
+                "cert_winner_stats": dict(self.cert_winner_stats),
+                "edge_realized": {k: dict(v) for k, v in self.edge_realized.items()},
             }
 
     def _now(self) -> str:
-        return datetime.datetime.utcnow().strftime("%H:%M:%S UTC")
+        return datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S UTC")
 
     # ── Push helpers ──────────────────────────────────────────────────────────
 
@@ -154,9 +256,9 @@ class MetricsStore:
                     title=p.get("title", p.get("ticker", "")),
                     side=p.get("side", "yes"),
                     contracts=int(p.get("position", 0)),
-                    avg_price=float(p.get("fees_paid_dollars") or 0),
-                    current_bid=float(p.get("yes_bid_dollars") or 0),
-                    current_ask=float(p.get("yes_ask_dollars") or 0),
+                    avg_price=float(p.get("average_price") or p.get("fees_paid_dollars") or 0),
+                    current_bid=float(p.get("current_bid") or p.get("yes_bid_dollars") or 0),
+                    current_ask=float(p.get("current_ask") or p.get("yes_ask_dollars") or 0),
                     unrealized_pnl=float(p.get("unrealized_pnl") or 0),
                 )
                 for p in positions
@@ -190,12 +292,117 @@ class MetricsStore:
                 price_cents=price_cents, status=status,
                 reason=reason[:80], strategy=strategy,
             ))
+            if status == "placed":
+                self.order_lifecycle.placed_session += 1
+            # Per-strategy accounting: every submitted order counts, and
+            # blocked ones are tallied separately so we can see rejection
+            # rates per strategy.
+            s = self.strategy_stats.setdefault(strategy, {
+                "submitted": 0, "blocked": 0, "filled": 0,
+                "notional_dollars": 0.0, "last_ts": "",
+            })
+            if status in ("placed", "paper", "dry_run"):
+                s["submitted"] += 1
+                s["notional_dollars"] = round(
+                    s["notional_dollars"] + count * price_cents / 100, 2,
+                )
+                s["last_ts"] = self._now()
+            elif status == "blocked":
+                s["blocked"] += 1
+
+    def push_order_lifecycle(self, resting: int = 0,
+                             new_fills: int = 0, new_cancels: int = 0):
+        with self._lock:
+            self.order_lifecycle.resting = resting
+            self.order_lifecycle.filled_session += new_fills
+            self.order_lifecycle.cancelled_stale += new_cancels
 
     def push_log(self, line: str):
         with self._lock:
             self.log_lines.appendleft(
                 f"[{self._now()}] {line[:120]}"
             )
+
+    def push_pnl_snapshot(self, balance: float, portfolio: float,
+                          daily_pnl: float, realized_pnl: float,
+                          unrealized_pnl: float, open_positions: int,
+                          pending_orders: int):
+        with self._lock:
+            self.pnl_history.append(PnlSnapshot(
+                ts=self._now(),
+                balance=round(balance, 2),
+                portfolio=round(portfolio, 2),
+                daily_pnl=round(daily_pnl, 2),
+                realized_pnl=round(realized_pnl, 2),
+                unrealized_pnl=round(unrealized_pnl, 2),
+                open_positions=open_positions,
+                pending_orders=pending_orders,
+            ))
+
+    def push_fill(self, ticker: str, side: str, action: str,
+                  count: int, price_cents: int, strategy: str, reason: str):
+        with self._lock:
+            self.fill_history.appendleft(FillRecord(
+                ts=self._now(), ticker=ticker, side=side, action=action,
+                count=count, price_cents=price_cents,
+                strategy=strategy, reason=reason[:80],
+            ))
+            self.paper_stats["total_fills"] += 1
+            s = self.strategy_stats.setdefault(strategy, {
+                "submitted": 0, "blocked": 0, "filled": 0,
+                "notional_dollars": 0.0, "last_ts": "",
+            })
+            s["filled"] += 1
+
+    def push_basket(self, edge_cents: float, submitted: bool):
+        """Track one partition-arb basket build. Called once per basket,
+        not per leg. `submitted` is True iff every leg reached place_order
+        (partial baskets are aborted before reaching this)."""
+        with self._lock:
+            self.basket_stats["attempted"] += 1
+            if submitted:
+                self.basket_stats["submitted"] += 1
+                self.basket_stats["edge_sum_cents"] = round(
+                    self.basket_stats["edge_sum_cents"] + edge_cents, 2,
+                )
+                self.basket_stats["last_edge_cents"] = round(edge_cents, 2)
+
+    def push_basket_outcome(self, edge_cents: float, pnl: float):
+        """Record a settled basket's realized P&L bucketed by entry edge.
+        Bucket boundaries live in EDGE_BUCKETS so the dashboard can plot
+        win-rate and realized $/basket per bucket."""
+        with self._lock:
+            label = _edge_bucket_for(edge_cents)
+            stats = self.edge_realized[label]
+            stats["baskets"] += 1
+            if pnl > 0:
+                stats["wins"] += 1
+            stats["pnl_dollars"] = round(stats["pnl_dollars"] + pnl, 2)
+
+    def push_cert_winner(self, edge_cents: float, submitted: bool):
+        """Track one certain-winner single-leg attempt."""
+        with self._lock:
+            self.cert_winner_stats["attempted"] += 1
+            if submitted:
+                self.cert_winner_stats["submitted"] += 1
+                self.cert_winner_stats["edge_sum_cents"] = round(
+                    self.cert_winner_stats["edge_sum_cents"] + edge_cents, 2,
+                )
+
+    def push_paper_stats(self, starting_balance: float, realized_pnl: float,
+                         unrealized_pnl: float, total_submitted: int,
+                         total_fills: int, total_fees: float = 0.0,
+                         pending_orders: int = 0):
+        with self._lock:
+            self.paper_stats.update({
+                "starting_balance": round(starting_balance, 2),
+                "realized_pnl": round(realized_pnl, 2),
+                "unrealized_pnl": round(unrealized_pnl, 2),
+                "total_submitted": total_submitted,
+                "total_fills": total_fills,
+                "total_fees": round(total_fees, 2),
+                "pending_orders": pending_orders,
+            })
 
 
 # ── HTTP server ───────────────────────────────────────────────────────────────
@@ -260,4 +467,11 @@ class MetricsServer:
     def push_positions(self, *a):  self.store.push_positions(*a)
     def push_candidates(self, *a, **kw): self.store.push_candidates(*a, **kw)
     def push_order(self, **kw):    self.store.push_order(**kw)
+    def push_order_lifecycle(self, **kw): self.store.push_order_lifecycle(**kw)
     def push_log(self, line: str): self.store.push_log(line)
+    def push_pnl_snapshot(self, **kw): self.store.push_pnl_snapshot(**kw)
+    def push_fill(self, **kw):     self.store.push_fill(**kw)
+    def push_paper_stats(self, **kw): self.store.push_paper_stats(**kw)
+    def push_basket(self, **kw):   self.store.push_basket(**kw)
+    def push_basket_outcome(self, **kw): self.store.push_basket_outcome(**kw)
+    def push_cert_winner(self, **kw): self.store.push_cert_winner(**kw)

@@ -11,6 +11,7 @@ import os
 import time
 import base64
 import logging
+import uuid
 from typing import Optional
 
 import requests
@@ -182,6 +183,20 @@ class KalshiClient:
         """Get a single market by its ticker."""
         return self._get(f"/markets/{ticker}")
 
+    def get_events(self, series_ticker: str, status: str = "open", limit: int = 20) -> list[dict]:
+        """Fetch events for a series."""
+        resp = self._get("/events", params={
+            "series_ticker": series_ticker, "status": status, "limit": limit,
+        })
+        return resp.get("events", [])
+
+    def get_markets_for_event(self, event_ticker: str, limit: int = 100) -> list[dict]:
+        """Fetch ALL markets for an event — guarantees complete partitions."""
+        resp = self._get("/markets", params={
+            "event_ticker": event_ticker, "limit": limit,
+        })
+        return resp.get("markets", [])
+
     def get_orderbook(self, ticker: str, depth: int = 5) -> dict:
         """Get the order book for a market."""
         return self._get(f"/markets/{ticker}/orderbook", params={"depth": depth})
@@ -193,7 +208,12 @@ class KalshiClient:
         return self._get("/portfolio/balance")
 
     def get_positions(self) -> list[dict]:
-        """Get all open positions."""
+        """Get all open positions.
+
+        Pages through the cursor without sleeping between requests — the
+        request wrapper already backs off on 429s, so a fixed inter-page
+        sleep was just adding latency (40s+ at 140+ positions).
+        """
         all_positions = []
         cursor = None
         while True:
@@ -205,7 +225,6 @@ class KalshiClient:
             cursor = resp.get("cursor")
             if not cursor:
                 break
-            time.sleep(0.3)
         # Filter to non-zero positions client-side
         return [p for p in all_positions if p.get("position", 0) != 0]
 
@@ -223,19 +242,29 @@ class KalshiClient:
         count: int,
         limit_price: int,     # cents (1–99)
         action: str = "buy",
+        client_order_id: str | None = None,
     ) -> dict:
         """
         Place a limit order.
 
         limit_price is in cents (e.g. 45 = 45c = $0.45 per contract).
         Side is "yes" or "no". We set yes_price or no_price accordingly.
+
+        A `client_order_id` (auto-generated if not supplied) is sent with
+        every request. Kalshi uses this to de-duplicate: if the first
+        attempt made it server-side but the response was lost to a network
+        blip, a retry with the same client_order_id returns the original
+        order instead of creating a second one.
         """
+        if client_order_id is None:
+            client_order_id = str(uuid.uuid4())
         order = {
             "ticker": ticker,
             "side": side,
             "action": action,
             "type": "limit",
             "count": count,
+            "client_order_id": client_order_id,
         }
         if side == "yes":
             order["yes_price"] = limit_price
@@ -243,8 +272,8 @@ class KalshiClient:
             order["no_price"] = limit_price
 
         log.info(
-            "Placing order: %s %s %s x%d @ %d¢",
-            action, side, ticker, count, limit_price,
+            "Placing order: %s %s %s x%d @ %d¢ (client_id=%s)",
+            action, side, ticker, count, limit_price, client_order_id[:8],
         )
         return self._post("/portfolio/orders", order)
 

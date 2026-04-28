@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Kalshi Bot Dashboard</title>
+<title>Kalshi Bot — Paper Trading Dashboard</title>
 <style>
   :root {
     --bg0: #0d0f12;
@@ -24,6 +24,7 @@
     --blue: #60a5fa;
     --blue-dim: #1a3a5c;
     --purple: #a78bfa;
+    --purple-dim: #2d1f5c;
     --mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
     --sans: 'Inter', system-ui, sans-serif;
     --radius: 8px;
@@ -40,7 +41,6 @@
     line-height: 1.5;
   }
 
-  /* ── Header ─────────────────────────────────── */
   header {
     display: flex;
     align-items: center;
@@ -93,10 +93,11 @@
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
-  .badge-demo    { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(251,191,36,0.3); }
-  .badge-prod    { background: var(--red-dim);   color: var(--red);   border: 1px solid rgba(248,113,113,0.3); }
-  .badge-dry     { background: var(--blue-dim);  color: var(--blue);  border: 1px solid rgba(96,165,250,0.3); }
-  .badge-live    { background: var(--green-dim); color: var(--green); border: 1px solid rgba(62,207,142,0.3); }
+  .badge-paper  { background: var(--purple-dim); color: var(--purple); border: 1px solid rgba(167,139,250,0.3); }
+  .badge-demo   { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(251,191,36,0.3); }
+  .badge-prod   { background: var(--red-dim);   color: var(--red);   border: 1px solid rgba(248,113,113,0.3); }
+  .badge-dry    { background: var(--blue-dim);  color: var(--blue);  border: 1px solid rgba(96,165,250,0.3); }
+  .badge-live   { background: var(--green-dim); color: var(--green); border: 1px solid rgba(62,207,142,0.3); }
 
   .refresh-info {
     font-family: var(--mono);
@@ -104,7 +105,6 @@
     color: var(--text2);
   }
 
-  /* ── Layout ─────────────────────────────────── */
   main {
     padding: 20px 24px;
     display: flex;
@@ -116,10 +116,11 @@
 
   .row { display: grid; gap: 16px; }
   .row-4 { grid-template-columns: repeat(4, 1fr); }
+  .row-5 { grid-template-columns: repeat(5, 1fr); }
   .row-2 { grid-template-columns: 1fr 1fr; }
-  .row-3 { grid-template-columns: 2fr 1fr 1fr; }
+  .row-2-1 { grid-template-columns: 2fr 1fr; }
+  .row-1-2 { grid-template-columns: 1fr 2fr; }
 
-  /* ── Stat cards ─────────────────────────────── */
   .stat {
     background: var(--bg2);
     border: 1px solid var(--border);
@@ -143,11 +144,13 @@
     color: var(--text0);
     line-height: 1;
   }
+  .stat-value.sm { font-size: 20px; }
 
   .stat-value.green  { color: var(--green); }
   .stat-value.red    { color: var(--red); }
   .stat-value.amber  { color: var(--amber); }
   .stat-value.blue   { color: var(--blue); }
+  .stat-value.purple { color: var(--purple); }
 
   .stat-sub {
     font-size: 11px;
@@ -156,7 +159,6 @@
     font-family: var(--mono);
   }
 
-  /* ── Panel ──────────────────────────────────── */
   .panel {
     background: var(--bg1);
     border: 1px solid var(--border);
@@ -188,11 +190,10 @@
     color: var(--text2);
   }
 
-  /* ── Tables ─────────────────────────────────── */
   .tbl { width: 100%; border-collapse: collapse; }
 
   .tbl th {
-    padding: 8px 16px;
+    padding: 8px 12px;
     text-align: left;
     font-size: 10px;
     text-transform: uppercase;
@@ -204,7 +205,7 @@
   }
 
   .tbl td {
-    padding: 9px 16px;
+    padding: 7px 12px;
     font-family: var(--mono);
     font-size: 12px;
     border-bottom: 1px solid var(--border);
@@ -228,7 +229,6 @@
     font-size: 12px;
   }
 
-  /* ── Status chip ────────────────────────────── */
   .chip {
     display: inline-block;
     padding: 2px 8px;
@@ -240,17 +240,28 @@
     letter-spacing: 0.04em;
   }
   .chip-placed  { background: var(--green-dim); color: var(--green); }
+  .chip-paper   { background: var(--purple-dim); color: var(--purple); }
+  .chip-paper_filled { background: var(--green-dim); color: var(--green); }
   .chip-dry     { background: var(--blue-dim);  color: var(--blue); }
   .chip-blocked { background: var(--red-dim);   color: var(--red); }
   .chip-yes     { background: var(--green-dim); color: var(--green); }
   .chip-no      { background: var(--red-dim);   color: var(--red); }
+  .chip-buy     { background: var(--green-dim); color: var(--green); }
+  .chip-sell    { background: var(--red-dim);   color: var(--red); }
   .chip-weather { background: var(--blue-dim);  color: var(--blue); }
   .chip-expiring{ background: var(--amber-dim); color: var(--amber); }
 
-  /* ── Log ────────────────────────────────────── */
+  .chart-container {
+    padding: 16px;
+    height: 220px;
+    position: relative;
+  }
+
+  canvas { width: 100%; height: 100%; }
+
   .log-pane {
     padding: 12px 16px;
-    max-height: 240px;
+    max-height: 200px;
     overflow-y: auto;
     font-family: var(--mono);
     font-size: 11px;
@@ -262,10 +273,9 @@
   .log-line:last-child { border-bottom: none; }
   .log-line.error { color: var(--red); }
   .log-line.placed { color: var(--green); }
-  .log-line.dry { color: var(--blue); }
+  .log-line.fill { color: var(--purple); }
   .log-line.blocked { color: var(--amber); }
 
-  /* ── Mini bar chart ─────────────────────────── */
   .bar-row {
     display: flex;
     align-items: center;
@@ -278,7 +288,8 @@
   .bar-fill  { height: 100%; border-radius: 2px; transition: width 0.5s ease; }
   .bar-val   { font-family: var(--mono); font-size: 11px; color: var(--text2); min-width: 36px; text-align: right; }
 
-  /* ── Connection error ───────────────────────── */
+  .scroll-table { max-height: 300px; overflow-y: auto; }
+
   #conn-error {
     display: none;
     position: fixed;
@@ -290,11 +301,12 @@
     border-radius: var(--radius);
     font-family: var(--mono);
     font-size: 12px;
+    z-index: 200;
   }
 
   @media (max-width: 900px) {
-    .row-4 { grid-template-columns: 1fr 1fr; }
-    .row-2, .row-3 { grid-template-columns: 1fr; }
+    .row-4, .row-5 { grid-template-columns: 1fr 1fr; }
+    .row-2, .row-2-1, .row-1-2 { grid-template-columns: 1fr; }
   }
 </style>
 </head>
@@ -306,150 +318,237 @@
     KALSHI BOT
   </div>
   <div class="header-meta">
-    <span class="badge badge-demo" id="badge-mode">DEMO</span>
-    <span class="badge badge-dry"  id="badge-run">DRY RUN</span>
-    <span class="refresh-info" id="refresh-ts">–</span>
+    <span class="badge badge-paper" id="badge-mode">PAPER</span>
+    <span class="badge badge-paper" id="badge-run">PAPER</span>
+    <span class="refresh-info" id="refresh-ts">--</span>
   </div>
 </header>
 
 <main>
 
-  <!-- Stat row -->
-  <div class="row row-4">
+  <!-- Top stat cards -->
+  <div class="row row-5">
     <div class="stat">
-      <div class="stat-label">Available</div>
-      <div class="stat-value green" id="s-available">–</div>
-      <div class="stat-sub" id="s-portfolio">portfolio –</div>
+      <div class="stat-label">Portfolio Value</div>
+      <div class="stat-value green" id="s-portfolio">--</div>
+      <div class="stat-sub" id="s-cash">cash --</div>
     </div>
     <div class="stat">
-      <div class="stat-label">Daily P&amp;L</div>
-      <div class="stat-value" id="s-pnl">–</div>
-      <div class="stat-sub" id="s-pnl-sub">today</div>
+      <div class="stat-label">Total P&L</div>
+      <div class="stat-value" id="s-pnl">--</div>
+      <div class="stat-sub" id="s-pnl-sub">from $500 start</div>
     </div>
     <div class="stat">
-      <div class="stat-label">Loop</div>
-      <div class="stat-value blue" id="s-loop">–</div>
-      <div class="stat-sub" id="s-started">started –</div>
+      <div class="stat-label">Realized</div>
+      <div class="stat-value sm" id="s-realized">--</div>
+      <div class="stat-sub">closed trades</div>
     </div>
     <div class="stat">
-      <div class="stat-label">Orders fired</div>
-      <div class="stat-value amber" id="s-orders">–</div>
-      <div class="stat-sub" id="s-strategies">–</div>
+      <div class="stat-label">Unrealized</div>
+      <div class="stat-value sm" id="s-unrealized">--</div>
+      <div class="stat-sub">open positions</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Fills / Orders</div>
+      <div class="stat-value sm purple" id="s-fills">--</div>
+      <div class="stat-sub" id="s-pending">-- pending</div>
     </div>
   </div>
 
-  <!-- Scan stats bar chart -->
-  <div class="panel">
-    <div class="panel-header">
-      <span class="panel-title">Last scan</span>
-      <span class="panel-count" id="scan-ts">–</span>
+  <!-- P&L Chart + Strategy breakdown -->
+  <div class="row row-2-1">
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">P&L Over Time</span>
+        <span class="panel-count" id="chart-points">0 pts</span>
+      </div>
+      <div class="chart-container">
+        <canvas id="pnl-chart"></canvas>
+      </div>
     </div>
-    <div id="scan-bars">
-      <div class="bar-row">
-        <div class="bar-label">Total</div>
-        <div class="bar-track"><div class="bar-fill" id="bar-total" style="width:100%;background:var(--bg3)"></div></div>
-        <div class="bar-val" id="bv-total">–</div>
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Session Stats</span>
+        <span class="panel-count" id="s-loop">loop #--</span>
       </div>
-      <div class="bar-row">
-        <div class="bar-label">Candidates</div>
-        <div class="bar-track"><div class="bar-fill" id="bar-cands" style="background:var(--blue)"></div></div>
-        <div class="bar-val" id="bv-cands">–</div>
-      </div>
-      <div class="bar-row">
-        <div class="bar-label">Weather</div>
-        <div class="bar-track"><div class="bar-fill" id="bar-weather" style="background:var(--blue)"></div></div>
-        <div class="bar-val" id="bv-weather">–</div>
-      </div>
-      <div class="bar-row" style="border-bottom:none">
-        <div class="bar-label">Expiring</div>
-        <div class="bar-track"><div class="bar-fill" id="bar-expiring" style="background:var(--amber)"></div></div>
-        <div class="bar-val" id="bv-expiring">–</div>
+      <div style="padding: 16px;">
+        <div class="bar-row">
+          <div class="bar-label">Positions</div>
+          <div class="bar-track"><div class="bar-fill" id="bar-pos" style="background:var(--green)"></div></div>
+          <div class="bar-val" id="bv-pos">--</div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-label">Pending</div>
+          <div class="bar-track"><div class="bar-fill" id="bar-pend" style="background:var(--purple)"></div></div>
+          <div class="bar-val" id="bv-pend">--</div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-label">Candidates</div>
+          <div class="bar-track"><div class="bar-fill" id="bar-cands" style="background:var(--blue)"></div></div>
+          <div class="bar-val" id="bv-cands">--</div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-label">Weather</div>
+          <div class="bar-track"><div class="bar-fill" id="bar-weather" style="background:var(--blue)"></div></div>
+          <div class="bar-val" id="bv-weather">--</div>
+        </div>
+        <div class="bar-row" style="border-bottom:none">
+          <div class="bar-label">Expiring</div>
+          <div class="bar-track"><div class="bar-fill" id="bar-expiring" style="background:var(--amber)"></div></div>
+          <div class="bar-val" id="bv-expiring">--</div>
+        </div>
       </div>
     </div>
   </div>
 
-  <!-- Positions + Orders -->
+  <!-- Positions grouped by event + recent fills -->
   <div class="row row-2">
 
-    <!-- Positions -->
     <div class="panel">
       <div class="panel-header">
-        <span class="panel-title">Open positions</span>
+        <span class="panel-title">Open Positions</span>
         <span class="panel-count" id="pos-count">0</span>
       </div>
-      <table class="tbl">
-        <thead>
-          <tr>
-            <th>Ticker</th><th>Side</th><th>Qty</th><th>Bid</th><th>Ask</th>
-          </tr>
-        </thead>
-        <tbody id="pos-body">
-          <tr><td colspan="5" class="empty-row">No open positions</td></tr>
-        </tbody>
-      </table>
+      <div class="scroll-table">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Ticker</th><th>Side</th><th>Qty</th><th>Entry</th><th>Bid</th><th>Ask</th>
+            </tr>
+          </thead>
+          <tbody id="pos-body">
+            <tr><td colspan="6" class="empty-row">No open positions</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
-    <!-- Orders -->
     <div class="panel">
       <div class="panel-header">
-        <span class="panel-title">Recent orders</span>
-        <span class="panel-count" id="ord-count">0</span>
+        <span class="panel-title">Recent Fills</span>
+        <span class="panel-count" id="fill-count">0</span>
       </div>
+      <div class="scroll-table">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Time</th><th>Ticker</th><th>Action</th><th>Side</th><th>Qty</th><th>Price</th><th>Strategy</th>
+            </tr>
+          </thead>
+          <tbody id="fill-body">
+            <tr><td colspan="7" class="empty-row">No fills yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Per-edge realized P&L -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Realized P&L by Entry Edge</span>
+      <span class="panel-count" id="edge-count">0</span>
+    </div>
+    <div class="scroll-table">
       <table class="tbl">
         <thead>
           <tr>
-            <th>Time</th><th>Ticker</th><th>Side</th><th>Price</th><th>Status</th>
+            <th>Edge bucket</th><th>Baskets</th><th>Wins</th><th>Win %</th><th>Realized P&L</th><th>$/basket</th>
           </tr>
         </thead>
-        <tbody id="ord-body">
-          <tr><td colspan="5" class="empty-row">No orders yet</td></tr>
+        <tbody id="edge-body">
+          <tr><td colspan="6" class="empty-row">No settled baskets yet</td></tr>
         </tbody>
       </table>
     </div>
-
   </div>
 
-  <!-- Candidates -->
-  <div class="panel">
-    <div class="panel-header">
-      <span class="panel-title">Market candidates</span>
-      <span class="panel-count" id="cand-count">0</span>
+  <!-- Orders + Candidates -->
+  <div class="row row-2">
+
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Recent Orders</span>
+        <span class="panel-count" id="ord-count">0</span>
+      </div>
+      <div class="scroll-table">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Time</th><th>Ticker</th><th>Side</th><th>Price</th><th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="ord-body">
+            <tr><td colspan="5" class="empty-row">No orders yet</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
-    <table class="tbl">
-      <thead>
-        <tr>
-          <th>Ticker</th><th>Title</th><th>Tags</th><th>Mid</th><th>Spread</th>
-          <th>Volume</th><th>Closes in</th>
-        </tr>
-      </thead>
-      <tbody id="cand-body">
-        <tr><td colspan="7" class="empty-row">Waiting for first scan…</td></tr>
-      </tbody>
-    </table>
+
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Market Candidates</span>
+        <span class="panel-count" id="cand-count">0</span>
+      </div>
+      <div class="scroll-table">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Ticker</th><th>Title</th><th>Tags</th><th>Mid</th><th>Spread</th><th>Volume</th>
+            </tr>
+          </thead>
+          <tbody id="cand-body">
+            <tr><td colspan="6" class="empty-row">Waiting for first scan...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
   </div>
 
-  <!-- Log -->
+  <!-- Event log -->
   <div class="panel">
     <div class="panel-header">
-      <span class="panel-title">Event log</span>
+      <span class="panel-title">Event Log</span>
       <span class="panel-count" id="log-count">0</span>
     </div>
     <div class="log-pane" id="log-pane">
-      <div class="log-line">Waiting for bot…</div>
+      <div class="log-line">Waiting for bot...</div>
     </div>
   </div>
 
 </main>
 
-<div id="conn-error">⚠ Cannot reach bot at localhost:8765 — is it running?</div>
+<div id="conn-error">Cannot reach bot at localhost:8765 -- is it running?</div>
 
 <script>
 const API = 'http://127.0.0.1:8765/metrics';
 const REFRESH_MS = 3000;
 
-function fmt$(n) { return n == null ? '–' : '$' + parseFloat(n).toFixed(2); }
-function fmtPct(n) { return n == null ? '–' : (parseFloat(n)*100).toFixed(0) + '¢'; }
-function fmtMin(n) { return n == null ? '–' : n < 1 ? '<1m' : Math.round(n) + 'm'; }
+function fmt$(n) { return n == null ? '--' : '$' + parseFloat(n).toFixed(2); }
+function fmtPct(n) { return n == null ? '--' : (parseFloat(n)*100).toFixed(0) + 'c'; }
+function fmtMin(n) { return n == null ? '--' : n < 1 ? '<1m' : Math.round(n) + 'm'; }
+
+function sideChip(side) {
+  return `<span class="chip chip-${side}">${side.toUpperCase()}</span>`;
+}
+
+function actionChip(action) {
+  return `<span class="chip chip-${action}">${action.toUpperCase()}</span>`;
+}
+
+function statusChip(s) {
+  const map = { placed:'chip-placed', dry_run:'chip-dry', blocked:'chip-blocked',
+                paper:'chip-paper', paper_filled:'chip-paper_filled' };
+  const labels = { placed:'placed', dry_run:'dry', blocked:'blocked',
+                   paper:'pending', paper_filled:'filled' };
+  return `<span class="chip ${map[s]||''}">${labels[s]||s}</span>`;
+}
+
+function tagChips(tags) {
+  return tags.map(t => `<span class="chip chip-${t}">${t}</span>`).join(' ');
+}
 
 function setBar(id, val, valId, total) {
   const pct = total > 0 ? Math.min(100, (val / total) * 100) : 0;
@@ -457,75 +556,234 @@ function setBar(id, val, valId, total) {
   document.getElementById(valId).textContent = val;
 }
 
-function tagChips(tags) {
-  return tags.map(t =>
-    `<span class="chip chip-${t}">${t}</span>`
-  ).join(' ');
+// ---- P&L Chart (pure canvas, no dependencies) ----
+
+function drawPnlChart(history) {
+  const canvas = document.getElementById('pnl-chart');
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  canvas.style.width = rect.width + 'px';
+  canvas.style.height = rect.height + 'px';
+  ctx.scale(dpr, dpr);
+
+  const W = rect.width, H = rect.height;
+  const pad = { top: 20, right: 16, bottom: 30, left: 60 };
+  const cW = W - pad.left - pad.right;
+  const cH = H - pad.top - pad.bottom;
+
+  ctx.clearRect(0, 0, W, H);
+
+  if (history.length < 2) {
+    ctx.fillStyle = '#5a6278';
+    ctx.font = '12px JetBrains Mono, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('Collecting data...', W / 2, H / 2);
+    return;
+  }
+
+  const pnls = history.map(h => h.daily_pnl);
+  const minPnl = Math.min(0, ...pnls);
+  const maxPnl = Math.max(0, ...pnls);
+  const range = Math.max(maxPnl - minPnl, 0.01);
+  const yMin = minPnl - range * 0.1;
+  const yMax = maxPnl + range * 0.1;
+
+  function xPos(i) { return pad.left + (i / (history.length - 1)) * cW; }
+  function yPos(v) { return pad.top + (1 - (v - yMin) / (yMax - yMin)) * cH; }
+
+  // Grid lines
+  ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+  ctx.lineWidth = 1;
+  const gridSteps = 5;
+  for (let i = 0; i <= gridSteps; i++) {
+    const v = yMin + (yMax - yMin) * (i / gridSteps);
+    const y = yPos(v);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(W - pad.right, y);
+    ctx.stroke();
+
+    ctx.fillStyle = '#5a6278';
+    ctx.font = '10px JetBrains Mono, monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText('$' + v.toFixed(2), pad.left - 8, y + 3);
+  }
+
+  // Zero line
+  if (yMin < 0 && yMax > 0) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, yPos(0));
+    ctx.lineTo(W - pad.right, yPos(0));
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Gradient fill
+  const gradient = ctx.createLinearGradient(0, pad.top, 0, pad.top + cH);
+  const lastPnl = pnls[pnls.length - 1];
+  if (lastPnl >= 0) {
+    gradient.addColorStop(0, 'rgba(62, 207, 142, 0.25)');
+    gradient.addColorStop(1, 'rgba(62, 207, 142, 0.02)');
+  } else {
+    gradient.addColorStop(0, 'rgba(248, 113, 113, 0.02)');
+    gradient.addColorStop(1, 'rgba(248, 113, 113, 0.25)');
+  }
+
+  ctx.beginPath();
+  ctx.moveTo(xPos(0), yPos(0));
+  for (let i = 0; i < history.length; i++) {
+    ctx.lineTo(xPos(i), yPos(pnls[i]));
+  }
+  ctx.lineTo(xPos(history.length - 1), yPos(0));
+  ctx.closePath();
+  ctx.fillStyle = gradient;
+  ctx.fill();
+
+  // Line
+  ctx.beginPath();
+  for (let i = 0; i < history.length; i++) {
+    if (i === 0) ctx.moveTo(xPos(i), yPos(pnls[i]));
+    else ctx.lineTo(xPos(i), yPos(pnls[i]));
+  }
+  ctx.strokeStyle = lastPnl >= 0 ? '#3ecf8e' : '#f87171';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Current value dot
+  const lastX = xPos(history.length - 1);
+  const lastY = yPos(lastPnl);
+  ctx.beginPath();
+  ctx.arc(lastX, lastY, 4, 0, Math.PI * 2);
+  ctx.fillStyle = lastPnl >= 0 ? '#3ecf8e' : '#f87171';
+  ctx.fill();
+
+  // X-axis labels (timestamps)
+  ctx.fillStyle = '#5a6278';
+  ctx.font = '10px JetBrains Mono, monospace';
+  ctx.textAlign = 'center';
+  const labelEvery = Math.max(1, Math.floor(history.length / 6));
+  for (let i = 0; i < history.length; i += labelEvery) {
+    ctx.fillText(history[i].ts.split(' ')[0] || history[i].ts, xPos(i), H - 8);
+  }
+  // Always label last point
+  if (history.length > 1) {
+    const lastTs = history[history.length - 1].ts.split(' ')[0] || history[history.length - 1].ts;
+    ctx.fillText(lastTs, lastX, H - 8);
+  }
 }
 
-function sideChip(side) {
-  return `<span class="chip chip-${side}">${side.toUpperCase()}</span>`;
-}
 
-function statusChip(s) {
-  const map = { placed:'chip-placed', dry_run:'chip-dry', blocked:'chip-blocked' };
-  const labels = { placed:'placed', dry_run:'dry', blocked:'blocked' };
-  return `<span class="chip ${map[s]||''}">${labels[s]||s}</span>`;
-}
+// ---- Main render ----
 
 function render(data) {
-  const { status, balance, positions, orders, candidates, scan_stats, log_lines } = data;
+  const { status, balance, positions, orders, candidates, scan_stats,
+          log_lines, pnl_history, fill_history, paper_stats,
+          edge_realized } = data;
 
   // Header
   const dot = document.getElementById('status-dot');
   dot.className = 'logo-dot' + (status.running ? '' : ' offline');
 
   const modeEl = document.getElementById('badge-mode');
-  modeEl.textContent = status.demo ? 'DEMO' : 'PROD';
-  modeEl.className = 'badge ' + (status.demo ? 'badge-demo' : 'badge-prod');
-
   const runEl = document.getElementById('badge-run');
-  runEl.textContent = status.dry_run ? 'DRY RUN' : 'LIVE';
-  runEl.className = 'badge ' + (status.dry_run ? 'badge-dry' : 'badge-live');
+  if (paper_stats && paper_stats.starting_balance > 0) {
+    modeEl.textContent = 'PAPER';
+    modeEl.className = 'badge badge-paper';
+    runEl.textContent = 'PAPER';
+    runEl.className = 'badge badge-paper';
+  } else {
+    modeEl.textContent = status.demo ? 'DEMO' : 'PROD';
+    modeEl.className = 'badge ' + (status.demo ? 'badge-demo' : 'badge-prod');
+    runEl.textContent = status.dry_run ? 'DRY RUN' : 'LIVE';
+    runEl.className = 'badge ' + (status.dry_run ? 'badge-dry' : 'badge-live');
+  }
 
   document.getElementById('refresh-ts').textContent =
     'updated ' + new Date().toLocaleTimeString();
 
-  // Stats
-  document.getElementById('s-available').textContent = fmt$(balance.available_dollars);
-  document.getElementById('s-portfolio').textContent = 'portfolio ' + fmt$(balance.portfolio_value_dollars);
+  // Top stats
+  const portfolio = balance.portfolio_value_dollars;
+  document.getElementById('s-portfolio').textContent = fmt$(portfolio);
+  document.getElementById('s-cash').textContent = 'cash ' + fmt$(balance.available_dollars);
 
   const pnl = balance.daily_pnl_dollars;
   const pnlEl = document.getElementById('s-pnl');
   pnlEl.textContent = (pnl >= 0 ? '+' : '') + fmt$(pnl);
   pnlEl.className = 'stat-value ' + (pnl >= 0 ? 'green' : 'red');
 
-  document.getElementById('s-loop').textContent = '#' + status.loop_count;
-  document.getElementById('s-started').textContent = 'started ' + (status.started_at || '–');
-  document.getElementById('s-orders').textContent = scan_stats.orders_placed;
-  document.getElementById('s-strategies').textContent = (status.strategies || []).join(', ');
+  const startBal = (paper_stats && paper_stats.starting_balance) || 500;
+  const pnlPct = startBal > 0 ? ((pnl / startBal) * 100).toFixed(1) : '0.0';
+  document.getElementById('s-pnl-sub').textContent =
+    (pnl >= 0 ? '+' : '') + pnlPct + '% from $' + startBal.toFixed(0);
 
-  // Scan bars
-  document.getElementById('scan-ts').textContent = status.last_scan_at || '–';
+  const realizedPnl = (paper_stats && paper_stats.realized_pnl) || 0;
+  const realEl = document.getElementById('s-realized');
+  realEl.textContent = (realizedPnl >= 0 ? '+' : '') + fmt$(realizedPnl);
+  realEl.className = 'stat-value sm ' + (realizedPnl >= 0 ? 'green' : 'red');
+
+  const unrealizedPnl = (paper_stats && paper_stats.unrealized_pnl) || 0;
+  const unrEl = document.getElementById('s-unrealized');
+  unrEl.textContent = (unrealizedPnl >= 0 ? '+' : '') + fmt$(unrealizedPnl);
+  unrEl.className = 'stat-value sm ' + (unrealizedPnl >= 0 ? 'green' : 'red');
+
+  const totalFills = (paper_stats && paper_stats.total_fills) || 0;
+  const totalSub = (paper_stats && paper_stats.total_submitted) || 0;
+  document.getElementById('s-fills').textContent = totalFills + ' / ' + totalSub;
+  const pendingOrders = (paper_stats && paper_stats.pending_orders) || 0;
+  document.getElementById('s-pending').textContent = pendingOrders + ' pending';
+
+  // Session stats
+  document.getElementById('s-loop').textContent = 'loop #' + status.loop_count;
   const total = scan_stats.total_markets || 1;
-  setBar('bar-total',   scan_stats.total_markets, 'bv-total',   total);
-  setBar('bar-cands',   scan_stats.candidates,    'bv-cands',   total);
-  setBar('bar-weather', scan_stats.weather,        'bv-weather', total);
-  setBar('bar-expiring',scan_stats.expiring,       'bv-expiring',total);
+  setBar('bar-pos',     positions.length, 'bv-pos',     100);
+  setBar('bar-pend',    pendingOrders,    'bv-pend',    100);
+  setBar('bar-cands',   scan_stats.candidates || 0, 'bv-cands',   total);
+  setBar('bar-weather', scan_stats.weather || 0,    'bv-weather', total);
+  setBar('bar-expiring',scan_stats.expiring || 0,   'bv-expiring',total);
+
+  // P&L chart
+  const hist = pnl_history || [];
+  document.getElementById('chart-points').textContent = hist.length + ' pts';
+  drawPnlChart(hist);
 
   // Positions
   document.getElementById('pos-count').textContent = positions.length;
   const posBody = document.getElementById('pos-body');
   if (!positions.length) {
-    posBody.innerHTML = '<tr><td colspan="5" class="empty-row">No open positions</td></tr>';
+    posBody.innerHTML = '<tr><td colspan="6" class="empty-row">No open positions</td></tr>';
   } else {
     posBody.innerHTML = positions.map(p => `
       <tr>
         <td class="bright">${p.ticker}</td>
         <td>${sideChip(p.side)}</td>
         <td class="bright">${p.contracts}</td>
+        <td class="blue">${p.avg_price ? p.avg_price + 'c' : '--'}</td>
         <td class="green">${fmtPct(p.current_bid)}</td>
         <td class="amber">${fmtPct(p.current_ask)}</td>
+      </tr>`).join('');
+  }
+
+  // Fill history
+  const fills = fill_history || [];
+  document.getElementById('fill-count').textContent = fills.length;
+  const fillBody = document.getElementById('fill-body');
+  if (!fills.length) {
+    fillBody.innerHTML = '<tr><td colspan="7" class="empty-row">No fills yet</td></tr>';
+  } else {
+    fillBody.innerHTML = fills.slice(0, 30).map(f => `
+      <tr>
+        <td>${f.ts}</td>
+        <td class="bright">${f.ticker}</td>
+        <td>${actionChip(f.action)}</td>
+        <td>${sideChip(f.side)}</td>
+        <td class="bright">${f.count}</td>
+        <td class="amber">${f.price_cents}c</td>
+        <td>${f.strategy}</td>
       </tr>`).join('');
   }
 
@@ -540,7 +798,7 @@ function render(data) {
         <td>${o.ts}</td>
         <td class="bright">${o.ticker}</td>
         <td>${sideChip(o.side)}</td>
-        <td class="amber">${o.price_cents}¢</td>
+        <td class="amber">${o.price_cents}c</td>
         <td>${statusChip(o.status)}</td>
       </tr>`).join('');
   }
@@ -549,19 +807,46 @@ function render(data) {
   document.getElementById('cand-count').textContent = candidates.length;
   const candBody = document.getElementById('cand-body');
   if (!candidates.length) {
-    candBody.innerHTML = '<tr><td colspan="7" class="empty-row">No candidates found</td></tr>';
+    candBody.innerHTML = '<tr><td colspan="6" class="empty-row">No candidates found</td></tr>';
   } else {
     candBody.innerHTML = candidates.map(c => {
       const spread = (c.yes_bid != null && c.yes_ask != null)
-        ? ((c.yes_ask - c.yes_bid) * 100).toFixed(0) + '¢' : '–';
+        ? ((c.yes_ask - c.yes_bid) * 100).toFixed(0) + 'c' : '--';
       return `<tr>
         <td class="bright">${c.ticker}</td>
         <td>${c.title}</td>
         <td>${tagChips(c.tags)}</td>
-        <td class="green">${c.mid != null ? (c.mid*100).toFixed(0)+'¢' : '–'}</td>
+        <td class="green">${c.mid != null ? (c.mid*100).toFixed(0)+'c' : '--'}</td>
         <td>${spread}</td>
         <td>${Math.round(c.volume)}</td>
-        <td class="${c.minutes_to_close < 15 ? 'red' : c.minutes_to_close < 30 ? 'amber' : ''}">${fmtMin(c.minutes_to_close)}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Per-edge realized
+  const edgeBody = document.getElementById('edge-body');
+  const edgeBuckets = edge_realized || {};
+  const edgeOrder = ['<8c', '8-10c', '10-15c', '15-25c', '25-50c', '50c+'];
+  const totalBaskets = edgeOrder.reduce(
+    (s, k) => s + ((edgeBuckets[k] && edgeBuckets[k].baskets) || 0), 0,
+  );
+  document.getElementById('edge-count').textContent = totalBaskets;
+  if (!totalBaskets) {
+    edgeBody.innerHTML = '<tr><td colspan="6" class="empty-row">No settled baskets yet</td></tr>';
+  } else {
+    edgeBody.innerHTML = edgeOrder.map(label => {
+      const b = edgeBuckets[label] || { baskets: 0, wins: 0, pnl_dollars: 0 };
+      if (!b.baskets) return '';
+      const winPct = (100 * b.wins / b.baskets).toFixed(0) + '%';
+      const perBasket = (b.pnl_dollars / b.baskets).toFixed(2);
+      const pnlCls = b.pnl_dollars >= 0 ? 'green' : 'red';
+      return `<tr>
+        <td class="bright">${label}</td>
+        <td>${b.baskets}</td>
+        <td>${b.wins}</td>
+        <td>${winPct}</td>
+        <td class="${pnlCls}">${b.pnl_dollars >= 0 ? '+' : ''}$${b.pnl_dollars.toFixed(2)}</td>
+        <td class="${pnlCls}">${perBasket >= 0 ? '+' : ''}$${perBasket}</td>
       </tr>`;
     }).join('');
   }
@@ -569,15 +854,16 @@ function render(data) {
   // Log
   document.getElementById('log-count').textContent = log_lines.length;
   const logPane = document.getElementById('log-pane');
-  logPane.innerHTML = log_lines.slice(0, 80).map(line => {
+  logPane.innerHTML = log_lines.slice(0, 60).map(line => {
     let cls = 'log-line';
     if (line.includes('ERROR')) cls += ' error';
+    else if (line.includes('PAPER FILL')) cls += ' fill';
     else if (line.includes('PLACED')) cls += ' placed';
-    else if (line.includes('DRY')) cls += ' dry';
     else if (line.includes('BLOCKED')) cls += ' blocked';
     return `<div class="${cls}">${line}</div>`;
   }).join('');
 }
+
 
 async function refresh() {
   const errEl = document.getElementById('conn-error');
